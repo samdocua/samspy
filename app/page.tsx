@@ -1,10 +1,16 @@
-// SamSpy — home page with the three tabs (v0.1.0, 2026-11-17)
-// Tab 1 (competitors) is live; tabs 2 & 3 are placeholders for later steps.
+// SamSpy — home page with the three tabs
+//   v0.1.0 (2026-11-17) — tabs; competitors + top live.
+//   v0.1.1 (2026-11-17) — logout button (auth).
 'use client';
 
 import { useState } from 'react';
 import CompetitorsView from './components/CompetitorsView';
 import TopReelsView from './components/TopReelsView';
+
+async function logout() {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  window.location.href = '/login';
+}
 
 type Tab = 'competitors' | 'search' | 'top';
 
@@ -19,12 +25,20 @@ export default function Home() {
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-6">
-      {/* brand */}
-      <div className="mb-6 flex items-center gap-2">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent font-bold text-white">
-          S
+      {/* brand + logout */}
+      <div className="mb-6 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent font-bold text-white">
+            S
+          </div>
+          <h1 className="text-lg font-bold">SamSpy</h1>
         </div>
-        <h1 className="text-lg font-bold">SamSpy</h1>
+        <button
+          onClick={logout}
+          className="text-xs text-muted hover:text-gray-900"
+        >
+          Выйти
+        </button>
       </div>
 
       {/* tabs */}
