@@ -3,6 +3,8 @@
 //   v0.1.1 (2026-11-17) — hide the author line when the handle is unknown
 //                         (top-reels digest has no @username).
 //   v0.2.0 (2026-11-17) — optional "hide author" button (blacklist).
+//   v0.3.0 (2026-11-17) — selectable mode: click toggles selection instead of
+//                         opening the reel (used to copy URLs in manage mode).
 'use client';
 
 import Image from 'next/image';
@@ -12,24 +14,26 @@ import { compactNumber, outlierLabel, relativeDate } from '@/lib/format';
 export default function ReelCard({
   reel,
   onHide,
+  selectable = false,
+  selected = false,
+  onToggleSelect,
 }: {
   reel: ReelWithCompetitor;
   /** When set, shows a "hide author" button that calls this with the reel. */
   onHide?: (reel: ReelWithCompetitor) => void;
+  /** When true, clicking the card toggles selection instead of opening it. */
+  selectable?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (reel: ReelWithCompetitor) => void;
 }) {
   // Known handle, or null when we don't have one (don't show "@unknown").
   const author = reel.competitor?.username ?? reel.author_username ?? null;
 
-  return (
-    <a
-      href={reel.url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="group block overflow-hidden rounded-xl border border-edge bg-white shadow-sm transition hover:border-accent/60 hover:shadow-md"
-    >
+  const inner = (
+    <>
       {/* thumbnail (9:16-ish) */}
       <div className="relative aspect-[9/14] w-full overflow-hidden bg-black">
-        {onHide && (
+        {onHide && !selectable && (
           <button
             type="button"
             title="Скрыть автора"
@@ -43,6 +47,20 @@ export default function ReelCard({
             ✕
           </button>
         )}
+
+        {/* selection checkbox */}
+        {selectable && (
+          <span
+            className={`absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border-2 text-xs font-bold ${
+              selected
+                ? 'border-accent bg-accent text-white'
+                : 'border-white/80 bg-black/40 text-transparent'
+            }`}
+          >
+            ✓
+          </span>
+        )}
+
         {reel.thumbnail_url ? (
           <Image
             src={reel.thumbnail_url}
@@ -62,9 +80,7 @@ export default function ReelCard({
         {reel.outlier_ratio != null && (
           <span
             className={`absolute left-2 top-2 rounded-md px-2 py-0.5 text-xs font-bold ${
-              reel.is_outlier
-                ? 'bg-accent text-white'
-                : 'bg-black/70 text-muted'
+              reel.is_outlier ? 'bg-accent text-white' : 'bg-black/70 text-muted'
             }`}
           >
             {outlierLabel(reel.outlier_ratio)}
@@ -91,6 +107,30 @@ export default function ReelCard({
           {relativeDate(reel.published_at)}
         </span>
       </div>
+    </>
+  );
+
+  const cardClass = `group block overflow-hidden rounded-xl border bg-white shadow-sm transition hover:shadow-md ${
+    selected ? 'border-accent ring-2 ring-accent' : 'border-edge hover:border-accent/60'
+  }`;
+
+  // Selectable mode: the card is a button that toggles selection.
+  if (selectable) {
+    return (
+      <button
+        type="button"
+        onClick={() => onToggleSelect?.(reel)}
+        className={`${cardClass} text-left`}
+      >
+        {inner}
+      </button>
+    );
+  }
+
+  // Normal mode: the card opens the reel on its platform.
+  return (
+    <a href={reel.url} target="_blank" rel="noopener noreferrer" className={cardClass}>
+      {inner}
     </a>
   );
 }

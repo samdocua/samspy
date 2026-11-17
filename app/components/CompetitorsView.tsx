@@ -2,6 +2,7 @@
 //   v0.1.0 (2026-11-17) — add accounts, filter, reel grid.
 //   v0.2.0 (2026-11-17) — clickable account chips to filter the grid by one
 //                         account, higher grid limit, auto-collect on add.
+//   v0.3.0 (2026-11-17) — manage mode also selects reels and copies their URLs.
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
@@ -21,6 +22,53 @@ export default function CompetitorsView({ platform }: { platform: Platform }) {
   // null = all accounts; otherwise filter the grid to this competitor id.
   const [selected, setSelected] = useState<string | null>(null);
   const [manage, setManage] = useState(false);
+  // URLs of reels ticked in manage mode (for copying to clipboard).
+  const [selectedUrls, setSelectedUrls] = useState<Set<string>>(new Set());
+  const [copied, setCopied] = useState(false);
+
+  function toggleSelect(reel: ReelWithCompetitor) {
+    setSelectedUrls((prev) => {
+      const next = new Set(prev);
+      if (next.has(reel.url)) next.delete(reel.url);
+      else next.add(reel.url);
+      return next;
+    });
+    setCopied(false);
+  }
+
+  function selectAllShown() {
+    setSelectedUrls(new Set(reels.map((r) => r.url)));
+    setCopied(false);
+  }
+
+  function clearSelection() {
+    setSelectedUrls(new Set());
+    setCopied(false);
+  }
+
+  async function copySelected() {
+    const text = [...selectedUrls].join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Fallback for browsers that block the async clipboard API.
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    setCopied(true);
+  }
+
+  // Leaving manage mode clears any pending selection.
+  function toggleManage() {
+    setManage((m) => {
+      if (m) clearSelection();
+      return !m;
+    });
+  }
   // Start at 0 so reels show even before an outlier ratio is computed
   // (IG views can be 0 on the first sync). Raise the slider to filter.
   const [filters, setFilters] = useState<Filters>({
@@ -110,7 +158,7 @@ export default function CompetitorsView({ platform }: { platform: Platform }) {
             )}
             {competitors.length > 0 && (
               <button
-                onClick={() => setManage((m) => !m)}
+                onClick={toggleManage}
                 className="text-xs text-muted hover:text-gray-900"
               >
                 {manage ? 'Готово' : 'Управление'}
@@ -181,9 +229,44 @@ export default function CompetitorsView({ platform }: { platform: Platform }) {
         </p>
       ) : (
         <>
+          {/* selection toolbar (manage mode only) */}
+          {manage && (
+            <div className="sticky top-2 z-20 flex flex-wrap items-center gap-3 rounded-xl border border-accent/40 bg-white/95 px-4 py-2.5 shadow-sm backdrop-blur">
+              <span className="text-sm font-semibold text-gray-900">
+                Выбрано: {selectedUrls.size}
+              </span>
+              <button
+                onClick={selectAllShown}
+                className="text-xs text-accent hover:underline"
+              >
+                Выбрать все
+              </button>
+              {selectedUrls.size > 0 && (
+                <button
+                  onClick={clearSelection}
+                  className="text-xs text-muted hover:text-gray-900"
+                >
+                  Сбросить
+                </button>
+              )}
+              <button
+                onClick={copySelected}
+                disabled={selectedUrls.size === 0}
+                className="ml-auto rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:opacity-90 disabled:opacity-40"
+              >
+                {copied ? 'Скопировано ✓' : 'Копировать URL'}
+              </button>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
             {reels.map((r) => (
-              <ReelCard key={r.id} reel={r} />
+              <ReelCard
+                key={r.id}
+                reel={r}
+                selectable={manage}
+                selected={selectedUrls.has(r.url)}
+                onToggleSelect={toggleSelect}
+              />
             ))}
           </div>
           {hasMore && (
