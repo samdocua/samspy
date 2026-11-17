@@ -147,3 +147,41 @@ export interface VirloInstagramDigestItem {
   author_id?: string;
   niche?: string;
 }
+
+// ---------------------------------------------------------------------------
+// POST /v1/search/videos  (tab 2 — keyword search over Virlo's library)
+//   $0.05 per page of 25 results. Pages are fixed at 25; paginate via cursor.
+// ---------------------------------------------------------------------------
+export interface VirloSearchAuthor {
+  username?: string;
+  avatar_url?: string;
+  followers?: number;
+  verified?: boolean;
+}
+
+export interface VirloSearchVideo {
+  id: string;
+  url: string;
+  platform: VirloPlatform;
+  description?: string;
+  thumbnail_url?: string;
+  publish_date?: string;
+  views: number;
+  likes?: number;
+  comments?: number;
+  shares?: number;
+  bookmarks?: number;
+  duration?: number | null;
+  virality_score?: number | null; // Virlo's breakout score (outlier-like)
+  author?: VirloSearchAuthor;
+  hashtags?: string[];
+}
+
+export interface VirloSearchVideosResponse {
+  videos: VirloSearchVideo[];
+  total: number;
+  page: number;
+  has_more: boolean;
+  cursor?: string;
+  next_cursor?: string;
+}

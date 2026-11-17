@@ -64,3 +64,18 @@ export interface ReelWithCompetitor extends Reel {
     'id' | 'username' | 'display_name' | 'avatar_url' | 'niche_id'
   > | null;
 }
+
+/** A saved search "block" (tab 2). */
+export interface SavedSearch {
+  id: string;
+  query: string;        // the raw topic string (may contain `|` synonyms)
+  label: string | null; // display name for the block
+  last_run_at: string | null;
+  created_at: string;
+}
+
+/** A saved-search block decorated with a reel count and a cover thumbnail. */
+export interface SavedSearchCard extends SavedSearch {
+  reel_count: number;
+  cover_url: string | null;
+}

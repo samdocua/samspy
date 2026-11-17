@@ -16,7 +16,8 @@ import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase';
 import { syncCompetitor, type SyncResult } from '@/lib/sync';
 import { refreshTopReels } from '@/lib/top';
-import type { Competitor } from '@/lib/types/db';
+import { refreshSavedSearch } from '@/lib/search';
+import type { Competitor, SavedSearch } from '@/lib/types/db';
 
 export const maxDuration = 60; // seconds (Vercel hobby limit)
 export const dynamic = 'force-dynamic';
@@ -63,11 +64,12 @@ export async function GET(req: Request) {
     }
   }
 
+  const url = new URL(req.url);
+
   // Refresh the Top Reels digest once per run ($0.25). Pass ?skipTop=1 to skip
   // (e.g. a manual mid-day sync where you don't want to pay for the digest).
   let top: { fetched: number; cached: number } | null = null;
-  const skipTop = new URL(req.url).searchParams.get('skipTop') === '1';
-  if (!skipTop) {
+  if (url.searchParams.get('skipTop') !== '1') {
     try {
       const r = await refreshTopReels(supabase, 60);
       top = { fetched: r.fetched, cached: r.cached };
@@ -79,11 +81,32 @@ export async function GET(req: Request) {
     }
   }
 
+  // Refresh each saved-search block (~$0.10 each). Pass ?skipSearch=1 to skip.
+  let searches = 0;
+  if (url.searchParams.get('skipSearch') !== '1') {
+    const { data: blocks } = await supabase
+      .from('saved_searches')
+      .select('*')
+      .returns<SavedSearch[]>();
+    for (const b of blocks ?? []) {
+      try {
+        await refreshSavedSearch(supabase, b);
+        searches++;
+      } catch (err) {
+        errors.push({
+          username: `(search: ${b.query})`,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     synced: results.length,
     reels: results.reduce((n, r) => n + r.reelsUpserted, 0),
     top,
+    searches,
     results,
     errors,
     ranAt: new Date().toISOString(),

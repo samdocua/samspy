@@ -6,6 +6,7 @@
 import { useState } from 'react';
 import CompetitorsView from './components/CompetitorsView';
 import TopReelsView from './components/TopReelsView';
+import SearchView from './components/SearchView';
 
 async function logout() {
   await fetch('/api/auth/logout', { method: 'POST' });
@@ -60,11 +61,7 @@ export default function Home() {
 
       {/* content */}
       {tab === 'competitors' && <CompetitorsView />}
-      {tab === 'search' && (
-        <p className="py-10 text-center text-muted">
-          Поиск по запросам — следующий этап.
-        </p>
-      )}
+      {tab === 'search' && <SearchView />}
       {tab === 'top' && <TopReelsView />}
     </main>
   );

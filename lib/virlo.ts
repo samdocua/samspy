@@ -17,11 +17,13 @@ import type {
   VirloEnvelope,
   VirloListEnvelope,
   VirloCadence,
+  VirloPlatform,
   VirloTrackCreatorResponse,
   VirloCreator,
   VirloCreatorPost,
   VirloSignal,
   VirloInstagramDigestItem,
+  VirloSearchVideosResponse,
 } from './types/virlo';
 
 const VIRLO_BASE_URL = 'https://api.virlo.ai/v1';
@@ -205,6 +207,41 @@ export async function instagramDigest(
 ): Promise<VirloInstagramDigestItem[]> {
   const res = await virloFetch<VirloEnvelope<VirloInstagramDigestItem[]>>(
     `/instagram/videos/digest?limit=${Math.min(Math.max(limit, 1), 100)}`
+  );
+  return res.data;
+}
+
+// ---------------------------------------------------------------------------
+// Keyword search (tab 2) — POST /v1/search/videos over Virlo's library.
+// $0.05 per page of 25 results (empty page is free). Paginate via next_cursor.
+// ---------------------------------------------------------------------------
+
+export interface SearchVideosInput {
+  /** Keyword topics; a block uses one topic with `|`-joined synonyms. */
+  topics: string[];
+  platforms?: VirloPlatform[]; // default ['instagram']
+  postedAfter?: string; // 'YYYY-MM-DD'
+  cursor?: string; // from a previous next_cursor (1h TTL)
+}
+
+/**
+ * Run one page (25 results) of a library video search. Costs $0.05 if the
+ * page has results. Returns the page plus next_cursor for the following page.
+ */
+export async function searchVideos(
+  input: SearchVideosInput
+): Promise<VirloSearchVideosResponse> {
+  const body: Record<string, unknown> = {
+    scope: 'virlo_library',
+    topics: input.topics,
+    platforms: input.platforms ?? ['instagram'],
+  };
+  if (input.postedAfter) body.posted_after = input.postedAfter;
+  if (input.cursor) body.cursor = input.cursor;
+
+  const res = await virloFetch<VirloEnvelope<VirloSearchVideosResponse>>(
+    '/search/videos',
+    { method: 'POST', body: JSON.stringify(body) }
   );
   return res.data;
 }
