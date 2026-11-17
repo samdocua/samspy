@@ -38,6 +38,19 @@ export async function GET(req: Request) {
 
   const supabase = createServiceClient();
 
+  // DEBUG: what Supabase project is this deployment pointed at, and how many
+  // competitors does it see UNFILTERED (vs the active/pending filter)?
+  const supabaseHost = (() => {
+    try {
+      return new URL(process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').host;
+    } catch {
+      return 'unset';
+    }
+  })();
+  const { data: allComp } = await supabase
+    .from('competitors')
+    .select('username,virlo_status');
+
   // Sync only accounts Virlo is actively tracking.
   const { data: competitors, error } = await supabase
     .from('competitors')
@@ -103,8 +116,10 @@ export async function GET(req: Request) {
 
   return NextResponse.json({
     ok: true,
-    // Debug: how many rows the active/pending query returned at runtime,
-    // and which usernames — to diagnose "new accounts not syncing".
+    // Debug: which Supabase this deployment reads, and what it sees.
+    supabaseHost,
+    allCompetitorsSeen: allComp?.length ?? 0,
+    allCompetitors: (allComp ?? []).map((c) => `${c.username}:${c.virlo_status}`),
     competitorsFound: competitors?.length ?? 0,
     competitorUsernames: (competitors ?? []).map((c) => c.username),
     synced: results.length,
