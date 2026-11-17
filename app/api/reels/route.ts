@@ -23,6 +23,7 @@ export async function GET(req: Request) {
   const periodDays = p.get('period') ? Number(p.get('period')) : null;
   const sort = p.get('sort') ?? 'outlier'; // outlier | views | recent
   const limit = Math.min(Number(p.get('limit') ?? 60), 200);
+  const offset = Math.max(Number(p.get('offset') ?? 0), 0);
 
   const supabase = createServiceClient();
 
@@ -47,15 +48,21 @@ export async function GET(req: Request) {
     q = q.order('published_at', { ascending: false, nullsFirst: false });
   else q = q.order('outlier_ratio', { ascending: false, nullsFirst: false });
 
-  q = q.limit(limit);
+  // Page with offset/limit for "Show more". We fetch one extra row to tell the
+  // client whether there's another page.
+  q = q.range(offset, offset + limit); // inclusive -> limit+1 rows
 
   const { data, error } = await q;
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  // We asked for limit+1 rows; if we got more than `limit`, there's another page.
+  const rows = data ?? [];
+  const hasMore = rows.length > limit;
+  let reels = hasMore ? rows.slice(0, limit) : rows;
+
   // Niche filter is applied after the join (competitor.niche_id).
-  let reels = data ?? [];
   if (nicheId) {
     reels = reels.filter(
       (r: { competitor?: { niche_id?: string | null } | null }) =>
@@ -63,5 +70,5 @@ export async function GET(req: Request) {
     );
   }
 
-  return NextResponse.json({ reels });
+  return NextResponse.json({ reels, hasMore });
 }

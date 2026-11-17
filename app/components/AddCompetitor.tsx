@@ -1,24 +1,49 @@
-// SamSpy — AddCompetitor (v0.1.0, 2026-11-17)
-// Input to add a competitor by @username or IG URL. Calls POST /api/competitors.
+// SamSpy — AddCompetitor
+//   v0.1.0 (2026-11-17) — add by @username / IG URL.
+//   v0.2.0 (2026-11-17) — after adding, poll a per-account sync so reels start
+//                         collecting immediately (Virlo needs ~1–2 min to
+//                         enrich, so we poll until reels appear).
 'use client';
 
 import { useState } from 'react';
 
 export default function AddCompetitor({
   onAdded,
+  onSynced,
 }: {
-  onAdded?: () => void;
+  onAdded?: () => void;              // reload the tracked-accounts chips
+  onSynced?: () => void;            // reload the reel grid when reels arrive
 }) {
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  // Poll the per-competitor sync until reels appear (or we give up ~2 min).
+  async function collect(id: string) {
+    for (let i = 0; i < 20; i++) {
+      try {
+        const res = await fetch(`/api/competitors/${id}/sync`, {
+          method: 'POST',
+        });
+        const data = await res.json();
+        if (data.result?.reelsUpserted > 0) {
+          onSynced?.();
+          return true;
+        }
+      } catch {
+        /* keep polling */
+      }
+      await new Promise((r) => setTimeout(r, 6000));
+    }
+    return false;
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!value.trim() || busy) return;
     setBusy(true);
-    setMsg(null);
+    setStatus(null);
     setErr(null);
     try {
       const res = await fetch('/api/competitors', {
@@ -27,15 +52,25 @@ export default function AddCompetitor({
         body: JSON.stringify({ username: value.trim() }),
       });
       const data = await res.json();
-      if (!res.ok) {
-        setErr(data.error ?? 'Failed to add.');
-      } else {
-        setMsg(data.message ?? 'Added.');
-        setValue('');
-        onAdded?.();
+      if (!res.ok && !data.competitor) {
+        setErr(data.error ?? 'Не удалось добавить.');
+        return;
+      }
+      setValue('');
+      onAdded?.();
+
+      // Start collecting reels right away.
+      if (data.competitor?.id) {
+        setStatus('Собираем ролики… (до ~2 минут)');
+        const ok = await collect(data.competitor.id);
+        setStatus(
+          ok
+            ? 'Сбор роликов завершён.'
+            : 'Аккаунт добавлен. Ролики появятся при следующем обновлении.'
+        );
       }
     } catch {
-      setErr('Network error.');
+      setErr('Ошибка сети.');
     } finally {
       setBusy(false);
     }
@@ -55,10 +90,10 @@ export default function AddCompetitor({
           disabled={busy}
           className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
         >
-          {busy ? 'Adding…' : 'Track'}
+          {busy ? 'Добавляю…' : 'Track'}
         </button>
       </div>
-      {msg && <p className="text-xs text-emerald-600">{msg}</p>}
+      {status && <p className="text-xs text-emerald-600">{status}</p>}
       {err && <p className="text-xs text-red-600">{err}</p>}
     </form>
   );

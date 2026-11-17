@@ -1,5 +1,7 @@
-// SamSpy — CompetitorsView (v0.1.0, 2026-11-17)
-// Tab 1 client view: add accounts, filter, and show the reel grid.
+// SamSpy — CompetitorsView
+//   v0.1.0 (2026-11-17) — add accounts, filter, reel grid.
+//   v0.2.0 (2026-11-17) — clickable account chips to filter the grid by one
+//                         account, higher grid limit, auto-collect on add.
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
@@ -8,10 +10,16 @@ import ReelCard from './ReelCard';
 import AddCompetitor from './AddCompetitor';
 import FiltersBar, { type Filters } from './FiltersBar';
 
+const PAGE = 60;
+
 export default function CompetitorsView() {
   const [reels, setReels] = useState<ReelWithCompetitor[]>([]);
   const [competitors, setCompetitors] = useState<Competitor[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  // null = all accounts; otherwise filter the grid to this competitor id.
+  const [selected, setSelected] = useState<string | null>(null);
   // Start at 0 so reels show even before an outlier ratio is computed
   // (IG views can be 0 on the first sync). Raise the slider to filter.
   const [filters, setFilters] = useState<Filters>({
@@ -21,20 +29,43 @@ export default function CompetitorsView() {
     sort: 'outlier',
   });
 
+  const buildParams = useCallback(
+    (offset: number) => {
+      const params = new URLSearchParams({
+        source: 'competitor',
+        min_outlier: String(filters.minOutlier),
+        min_views: String(filters.minViews),
+        sort: filters.sort,
+        limit: String(PAGE),
+        offset: String(offset),
+      });
+      if (filters.period) params.set('period', String(filters.period));
+      if (selected) params.set('competitor_id', selected);
+      return params;
+    },
+    [filters, selected]
+  );
+
+  // Load the first page (replaces the grid).
   const loadReels = useCallback(async () => {
     setLoading(true);
-    const params = new URLSearchParams({
-      source: 'competitor',
-      min_outlier: String(filters.minOutlier),
-      min_views: String(filters.minViews),
-      sort: filters.sort,
-    });
-    if (filters.period) params.set('period', String(filters.period));
-    const res = await fetch(`/api/reels?${params.toString()}`);
+    const res = await fetch(`/api/reels?${buildParams(0).toString()}`);
     const data = await res.json();
     setReels(data.reels ?? []);
+    setHasMore(!!data.hasMore);
     setLoading(false);
-  }, [filters]);
+  }, [buildParams]);
+
+  // Append the next page.
+  async function loadMore() {
+    if (loadingMore) return;
+    setLoadingMore(true);
+    const res = await fetch(`/api/reels?${buildParams(reels.length).toString()}`);
+    const data = await res.json();
+    setReels((prev) => [...prev, ...(data.reels ?? [])]);
+    setHasMore(!!data.hasMore);
+    setLoadingMore(false);
+  }
 
   const loadCompetitors = useCallback(async () => {
     const res = await fetch('/api/competitors');
@@ -51,34 +82,50 @@ export default function CompetitorsView() {
 
   return (
     <div className="flex flex-col gap-5">
-      {/* header: add account + tracked count */}
+      {/* header: add account + tracked chips */}
       <div className="rounded-xl border border-edge bg-white p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-muted">
-            Tracked accounts ({competitors.length})
+            Отслеживаемые аккаунты ({competitors.length})
           </h2>
+          {selected && (
+            <button
+              onClick={() => setSelected(null)}
+              className="text-xs text-accent hover:underline"
+            >
+              Показать все
+            </button>
+          )}
         </div>
-        <AddCompetitor onAdded={loadCompetitors} />
+        <AddCompetitor onAdded={loadCompetitors} onSynced={loadReels} />
         {competitors.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
-            {competitors.map((c) => (
-              <span
-                key={c.id}
-                className="rounded-full border border-edge px-2.5 py-1 text-xs text-muted"
-                title={c.virlo_status}
-              >
-                @{c.username}
-                <span
-                  className={`ml-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${
-                    c.virlo_status === 'active'
-                      ? 'bg-emerald-400'
-                      : c.virlo_status === 'pending'
-                        ? 'bg-amber-400'
-                        : 'bg-red-400'
+            {competitors.map((c) => {
+              const active = selected === c.id;
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => setSelected(active ? null : c.id)}
+                  className={`rounded-full border px-2.5 py-1 text-xs transition ${
+                    active
+                      ? 'border-accent bg-accent/10 text-gray-900'
+                      : 'border-edge text-muted hover:border-accent/50'
                   }`}
-                />
-              </span>
-            ))}
+                  title={c.virlo_status}
+                >
+                  @{c.username}
+                  <span
+                    className={`ml-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${
+                      c.virlo_status === 'active'
+                        ? 'bg-emerald-400'
+                        : c.virlo_status === 'pending'
+                          ? 'bg-amber-400'
+                          : 'bg-red-400'
+                    }`}
+                  />
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
@@ -88,18 +135,31 @@ export default function CompetitorsView() {
 
       {/* grid */}
       {loading ? (
-        <p className="py-10 text-center text-muted">Loading…</p>
+        <p className="py-10 text-center text-muted">Загрузка…</p>
       ) : reels.length === 0 ? (
         <p className="py-10 text-center text-muted">
-          No reels yet. Add accounts above — reels appear after the first daily
-          sync (each account enriches in ~1–2 min).
+          Пока нет роликов. Добавь аккаунты выше — после добавления ролики
+          собираются автоматически (аккаунт обрабатывается ~1–2 минуты).
         </p>
       ) : (
-        <div className="grid grid-cols-2 gap-3 pb-10 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-          {reels.map((r) => (
-            <ReelCard key={r.id} reel={r} />
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+            {reels.map((r) => (
+              <ReelCard key={r.id} reel={r} />
+            ))}
+          </div>
+          {hasMore && (
+            <div className="flex justify-center pb-10 pt-5">
+              <button
+                onClick={loadMore}
+                disabled={loadingMore}
+                className="rounded-lg border border-edge bg-white px-6 py-2 text-sm font-semibold text-gray-900 shadow-sm hover:border-accent disabled:opacity-50"
+              >
+                {loadingMore ? 'Загрузка…' : 'Показать ещё'}
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
