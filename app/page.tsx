@@ -4,6 +4,7 @@
 
 import { useState } from 'react';
 import CompetitorsView from './components/CompetitorsView';
+import TopReelsView from './components/TopReelsView';
 
 type Tab = 'competitors' | 'search' | 'top';
 
@@ -50,11 +51,7 @@ export default function Home() {
           Поиск по запросам — следующий этап.
         </p>
       )}
-      {tab === 'top' && (
-        <p className="py-10 text-center text-muted">
-          Топ Reels — следующий этап.
-        </p>
-      )}
+      {tab === 'top' && <TopReelsView />}
     </main>
   );
 }

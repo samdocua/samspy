@@ -5,6 +5,8 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-17) — Loop active competitors -> syncCompetitor().
+//   v0.1.1 (2026-11-17) — Also refresh the Top Reels digest once per run
+//                         ($0.25/day). Skip it with ?skipTop=1.
 //
 // Auth: requires `?secret=SAMSPY_SECRET` or an `Authorization: Bearer` header.
 // Vercel Cron sends the Authorization header automatically when configured
@@ -13,6 +15,7 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase';
 import { syncCompetitor, type SyncResult } from '@/lib/sync';
+import { refreshTopReels } from '@/lib/top';
 import type { Competitor } from '@/lib/types/db';
 
 export const maxDuration = 60; // seconds (Vercel hobby limit)
@@ -60,10 +63,27 @@ export async function GET(req: Request) {
     }
   }
 
+  // Refresh the Top Reels digest once per run ($0.25). Pass ?skipTop=1 to skip
+  // (e.g. a manual mid-day sync where you don't want to pay for the digest).
+  let top: { fetched: number; cached: number } | null = null;
+  const skipTop = new URL(req.url).searchParams.get('skipTop') === '1';
+  if (!skipTop) {
+    try {
+      const r = await refreshTopReels(supabase, 60);
+      top = { fetched: r.fetched, cached: r.cached };
+    } catch (err) {
+      errors.push({
+        username: '(top digest)',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     synced: results.length,
     reels: results.reduce((n, r) => n + r.reelsUpserted, 0),
+    top,
     results,
     errors,
     ranAt: new Date().toISOString(),
