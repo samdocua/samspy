@@ -44,6 +44,7 @@ export interface Reel {
   thumbnail_url: string | null;
   caption: string | null;
   author_username: string | null;
+  author_external_id: string | null;
   views: number;
   likes: number;
   comments: number;
@@ -70,7 +71,19 @@ export interface SavedSearch {
   id: string;
   query: string;        // the raw topic string (may contain `|` synonyms)
   label: string | null; // display name for the block
+  min_views: number;    // per-block minimum-views display filter
   last_run_at: string | null;
+  created_at: string;
+}
+
+/** A blacklist entry (per search block, or Top Reels). */
+export interface BlacklistEntry {
+  id: string;
+  scope: 'search' | 'top';
+  saved_search_id: string | null;
+  username: string | null;
+  author_external_id: string | null;
+  label: string | null;
   created_at: string;
 }
 

@@ -9,6 +9,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { instagramDigest } from './virlo';
+import { topBlacklistAuthorIds } from './blacklist';
 
 export interface TopRefreshResult {
   fetched: number;
@@ -31,10 +32,21 @@ export async function refreshTopReels(
     return { fetched: 0, cached: 0, refreshedAt: now };
   }
 
-  const rows = items.map((it) => ({
+  // Drop authors blacklisted for Top Reels (matched by author id).
+  const blocked = await topBlacklistAuthorIds(supabase);
+  const kept = blocked.size
+    ? items.filter((it) => !it.author_id || !blocked.has(it.author_id))
+    : items;
+
+  if (kept.length === 0) {
+    return { fetched: items.length, cached: 0, refreshedAt: now };
+  }
+
+  const rows = kept.map((it) => ({
     source: 'top' as const,
     url: it.url,
     external_id: it.external_id ?? null,
+    author_external_id: it.author_id ?? null,
     thumbnail_url: it.thumbnail_url ?? null,
     caption: it.description ?? null,
     author_username: null, // digest gives author_id, not a handle
@@ -56,7 +68,7 @@ export async function refreshTopReels(
   if (error) throw error;
 
   return {
-    fetched: items.length,
+    fetched: kept.length,
     cached: upserted?.length ?? 0,
     refreshedAt: now,
   };

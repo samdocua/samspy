@@ -11,6 +11,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { searchVideos } from './virlo';
+import { searchBlacklistUsernames } from './blacklist';
 import type { VirloSearchVideo } from './types/virlo';
 import type { SavedSearch } from './types/db';
 
@@ -28,6 +29,7 @@ function mapSearchVideo(v: VirloSearchVideo, savedSearchId: string) {
     thumbnail_url: v.thumbnail_url ?? null,
     caption: v.description ?? null,
     author_username: v.author?.username ?? null,
+    author_external_id: v.author?.username ?? null, // search: id == handle
     views: v.views ?? 0,
     likes: v.likes ?? 0,
     comments: v.comments ?? 0,
@@ -72,9 +74,17 @@ export async function refreshSavedSearch(
     cursor = page.next_cursor;
   }
 
+  // Drop results from authors blacklisted for this block.
+  const blocked = await searchBlacklistUsernames(supabase, saved.id);
+  const kept = blocked.size
+    ? all.filter(
+        (v) => !blocked.has((v.author?.username ?? '').toLowerCase())
+      )
+    : all;
+
   let cached = 0;
-  if (all.length > 0) {
-    const rows = all.map((v) => mapSearchVideo(v, saved.id));
+  if (kept.length > 0) {
+    const rows = kept.map((v) => mapSearchVideo(v, saved.id));
     const { data, error } = await supabase
       .from('reels')
       .upsert(rows, { onConflict: 'url' })
@@ -91,7 +101,7 @@ export async function refreshSavedSearch(
   return {
     savedSearchId: saved.id,
     query: saved.query,
-    fetched: all.length,
+    fetched: kept.length,
     cached,
     pages,
   };

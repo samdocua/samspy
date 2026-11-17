@@ -41,17 +41,62 @@ export async function GET(
     }
   }
 
-  const { data, error } = await supabase
+  // Apply the block's min-views filter on read.
+  const { data: saved } = await supabase
+    .from('saved_searches')
+    .select('min_views')
+    .eq('id', params.id)
+    .maybeSingle();
+  const minViews = saved?.min_views ?? 0;
+
+  let q = supabase
     .from('reels')
     .select('*')
     .eq('saved_search_id', params.id)
     .order('views', { ascending: false })
     .limit(120);
+  if (minViews > 0) q = q.gte('views', minViews);
 
+  const { data, error } = await q;
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
   return NextResponse.json({ reels: data ?? [] });
+}
+
+// --- PATCH: update block settings (min_views, label) -----------------------
+export async function PATCH(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
+  let body: { min_views?: number; label?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
+  }
+
+  const patch: Record<string, unknown> = {};
+  if (typeof body.min_views === 'number') {
+    patch.min_views = Math.max(0, Math.floor(body.min_views));
+  }
+  if (typeof body.label === 'string') patch.label = body.label.trim();
+  if (Object.keys(patch).length === 0) {
+    return NextResponse.json({ error: 'Nothing to update.' }, { status: 400 });
+  }
+
+  const supabase = createServiceClient();
+  const { data, error } = await supabase
+    .from('saved_searches')
+    .update(patch)
+    .eq('id', params.id)
+    .select('*')
+    .single();
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+  return NextResponse.json({ search: data });
 }
 
 // --- DELETE: remove the block and its cached reels -------------------------

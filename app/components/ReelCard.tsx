@@ -2,13 +2,21 @@
 //   v0.1.0 (2026-11-17) — thumbnail, outlier badge, views, author.
 //   v0.1.1 (2026-11-17) — hide the author line when the handle is unknown
 //                         (top-reels digest has no @username).
+//   v0.2.0 (2026-11-17) — optional "hide author" button (blacklist).
 'use client';
 
 import Image from 'next/image';
 import type { ReelWithCompetitor } from '@/lib/types/db';
 import { compactNumber, outlierLabel, relativeDate } from '@/lib/format';
 
-export default function ReelCard({ reel }: { reel: ReelWithCompetitor }) {
+export default function ReelCard({
+  reel,
+  onHide,
+}: {
+  reel: ReelWithCompetitor;
+  /** When set, shows a "hide author" button that calls this with the reel. */
+  onHide?: (reel: ReelWithCompetitor) => void;
+}) {
   // Known handle, or null when we don't have one (don't show "@unknown").
   const author = reel.competitor?.username ?? reel.author_username ?? null;
 
@@ -21,6 +29,20 @@ export default function ReelCard({ reel }: { reel: ReelWithCompetitor }) {
     >
       {/* thumbnail (9:16-ish) */}
       <div className="relative aspect-[9/14] w-full overflow-hidden bg-black">
+        {onHide && (
+          <button
+            type="button"
+            title="Скрыть автора"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onHide(reel);
+            }}
+            className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-xs text-white opacity-0 transition hover:bg-red-600 group-hover:opacity-100"
+          >
+            ✕
+          </button>
+        )}
         {reel.thumbnail_url ? (
           <Image
             src={reel.thumbnail_url}
