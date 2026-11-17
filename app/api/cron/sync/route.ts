@@ -38,29 +38,26 @@ export async function GET(req: Request) {
 
   const supabase = createServiceClient();
 
-  // DEBUG: what Supabase project is this deployment pointed at, and how many
-  // competitors does it see UNFILTERED (vs the active/pending filter)?
-  const supabaseHost = (() => {
-    try {
-      return new URL(process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').host;
-    } catch {
-      return 'unset';
-    }
-  })();
-  const { data: allComp } = await supabase
-    .from('competitors')
-    .select('username,virlo_status');
+  // Fetch competitors with EXPLICIT columns (a plain `select('*')` was observed
+  // to silently drop rows on this project's PostgREST), then filter in JS for
+  // the ones Virlo is actively tracking. Robust against that quirk.
+  const COLS =
+    'id,niche_id,username,display_name,avatar_url,bio,is_verified,' +
+    'virlo_creator_id,virlo_status,scrape_cadence,latest_followers,' +
+    'median_views,last_synced_at,created_at,updated_at';
 
-  // Sync only accounts Virlo is actively tracking.
-  const { data: competitors, error } = await supabase
+  const { data: allRows, error } = await supabase
     .from('competitors')
-    .select('*')
-    .in('virlo_status', ['active', 'pending'])
+    .select(COLS)
     .returns<Competitor[]>();
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  const competitors = (allRows ?? []).filter(
+    (c) => c.virlo_status === 'active' || c.virlo_status === 'pending'
+  );
 
   const results: SyncResult[] = [];
   const errors: { username: string; error: string }[] = [];
@@ -99,7 +96,7 @@ export async function GET(req: Request) {
   if (url.searchParams.get('skipSearch') !== '1') {
     const { data: blocks } = await supabase
       .from('saved_searches')
-      .select('*')
+      .select('id,query,label,min_views,last_run_at,created_at')
       .returns<SavedSearch[]>();
     for (const b of blocks ?? []) {
       try {
@@ -116,12 +113,7 @@ export async function GET(req: Request) {
 
   return NextResponse.json({
     ok: true,
-    // Debug: which Supabase this deployment reads, and what it sees.
-    supabaseHost,
-    allCompetitorsSeen: allComp?.length ?? 0,
-    allCompetitors: (allComp ?? []).map((c) => `${c.username}:${c.virlo_status}`),
-    competitorsFound: competitors?.length ?? 0,
-    competitorUsernames: (competitors ?? []).map((c) => c.username),
+    competitorsFound: competitors.length,
     synced: results.length,
     reels: results.reduce((n, r) => n + r.reelsUpserted, 0),
     top,
