@@ -1,0 +1,22 @@
+/* SamSpy — global styles
+ * v0.1.0 (2026-11-17) — initial dark theme
+ * v0.2.0 (2026-11-17) — switched to light theme
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  background: #f7f7fa;
+  color: #15151d;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* thin scrollbars */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #d4d4de; border-radius: 6px; }
+::-webkit-scrollbar-track { background: transparent; }

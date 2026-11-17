@@ -1,0 +1,11 @@
+# SamSpy — .gitignore (v0.1.0, 2026-11-17)
+node_modules/
+.next/
+out/
+.env
+.env.local
+.env*.local
+*.log
+.DS_Store
+.vercel
+next-env.d.ts
