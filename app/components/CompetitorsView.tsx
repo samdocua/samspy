@@ -20,6 +20,7 @@ export default function CompetitorsView() {
   const [hasMore, setHasMore] = useState(false);
   // null = all accounts; otherwise filter the grid to this competitor id.
   const [selected, setSelected] = useState<string | null>(null);
+  const [manage, setManage] = useState(false);
   // Start at 0 so reels show even before an outlier ratio is computed
   // (IG views can be 0 on the first sync). Raise the slider to filter.
   const [filters, setFilters] = useState<Filters>({
@@ -73,6 +74,15 @@ export default function CompetitorsView() {
     setCompetitors(data.competitors ?? []);
   }, []);
 
+  async function deleteCompetitor(c: Competitor) {
+    if (!confirm(`Перестать отслеживать @${c.username} и удалить его ролики?`))
+      return;
+    await fetch(`/api/competitors/${c.id}`, { method: 'DELETE' });
+    if (selected === c.id) setSelected(null);
+    loadCompetitors();
+    loadReels();
+  }
+
   useEffect(() => {
     loadReels();
   }, [loadReels]);
@@ -88,14 +98,24 @@ export default function CompetitorsView() {
           <h2 className="text-sm font-semibold text-muted">
             Отслеживаемые аккаунты ({competitors.length})
           </h2>
-          {selected && (
-            <button
-              onClick={() => setSelected(null)}
-              className="text-xs text-accent hover:underline"
-            >
-              Показать все
-            </button>
-          )}
+          <div className="flex items-center gap-3">
+            {selected && (
+              <button
+                onClick={() => setSelected(null)}
+                className="text-xs text-accent hover:underline"
+              >
+                Показать все
+              </button>
+            )}
+            {competitors.length > 0 && (
+              <button
+                onClick={() => setManage((m) => !m)}
+                className="text-xs text-muted hover:text-gray-900"
+              >
+                {manage ? 'Готово' : 'Управление'}
+              </button>
+            )}
+          </div>
         </div>
         <AddCompetitor onAdded={loadCompetitors} onSynced={loadReels} />
         {competitors.length > 0 && (
@@ -103,17 +123,21 @@ export default function CompetitorsView() {
             {competitors.map((c) => {
               const active = selected === c.id;
               return (
-                <button
+                <span
                   key={c.id}
-                  onClick={() => setSelected(active ? null : c.id)}
-                  className={`rounded-full border px-2.5 py-1 text-xs transition ${
+                  className={`flex items-center rounded-full border px-2.5 py-1 text-xs transition ${
                     active
                       ? 'border-accent bg-accent/10 text-gray-900'
-                      : 'border-edge text-muted hover:border-accent/50'
+                      : 'border-edge text-muted'
                   }`}
                   title={c.virlo_status}
                 >
-                  @{c.username}
+                  <button
+                    onClick={() => setSelected(active ? null : c.id)}
+                    className="hover:text-gray-900"
+                  >
+                    @{c.username}
+                  </button>
                   <span
                     className={`ml-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${
                       c.virlo_status === 'active'
@@ -123,7 +147,16 @@ export default function CompetitorsView() {
                           : 'bg-red-400'
                     }`}
                   />
-                </button>
+                  {manage && (
+                    <button
+                      onClick={() => deleteCompetitor(c)}
+                      title="Перестать отслеживать"
+                      className="ml-1.5 text-red-600 hover:text-red-700"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </span>
               );
             })}
           </div>
