@@ -103,6 +103,10 @@ export async function GET(req: Request) {
 
   return NextResponse.json({
     ok: true,
+    // Debug: how many rows the active/pending query returned at runtime,
+    // and which usernames — to diagnose "new accounts not syncing".
+    competitorsFound: competitors?.length ?? 0,
+    competitorUsernames: (competitors ?? []).map((c) => c.username),
     synced: results.length,
     reels: results.reduce((n, r) => n + r.reelsUpserted, 0),
     top,
