@@ -1,5 +1,7 @@
-// SamSpy — ReelCard (v0.1.0, 2026-11-17)
-// One reel tile: thumbnail, outlier badge, views, author. Opens the reel on IG.
+// SamSpy — ReelCard
+//   v0.1.0 (2026-11-17) — thumbnail, outlier badge, views, author.
+//   v0.1.1 (2026-11-17) — hide the author line when the handle is unknown
+//                         (top-reels digest has no @username).
 'use client';
 
 import Image from 'next/image';
@@ -7,8 +9,8 @@ import type { ReelWithCompetitor } from '@/lib/types/db';
 import { compactNumber, outlierLabel, relativeDate } from '@/lib/format';
 
 export default function ReelCard({ reel }: { reel: ReelWithCompetitor }) {
-  const author =
-    reel.competitor?.username ?? reel.author_username ?? 'unknown';
+  // Known handle, or null when we don't have one (don't show "@unknown").
+  const author = reel.competitor?.username ?? reel.author_username ?? null;
 
   return (
     <a
@@ -60,7 +62,9 @@ export default function ReelCard({ reel }: { reel: ReelWithCompetitor }) {
 
       {/* footer */}
       <div className="flex items-center justify-between px-2.5 py-2">
-        <span className="truncate text-xs text-muted">@{author}</span>
+        <span className="truncate text-xs text-muted">
+          {author ? `@${author}` : ''}
+        </span>
         <span className="shrink-0 text-xs text-muted">
           {relativeDate(reel.published_at)}
         </span>
