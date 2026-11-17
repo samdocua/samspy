@@ -19,11 +19,16 @@ import type { SavedSearch } from './types/db';
 export const DEFAULT_SEARCH_PAGES = 2;
 
 /** Map one search video to a reels row (source='search'). */
-function mapSearchVideo(v: VirloSearchVideo, savedSearchId: string) {
+function mapSearchVideo(
+  v: VirloSearchVideo,
+  savedSearchId: string,
+  platform: string
+) {
   return {
     source: 'search' as const,
     saved_search_id: savedSearchId,
     competitor_id: null,
+    platform,
     url: v.url,
     external_id: v.id ?? null,
     thumbnail_url: v.thumbnail_url ?? null,
@@ -66,7 +71,7 @@ export async function refreshSavedSearch(
   for (let i = 0; i < pages; i++) {
     const page = await searchVideos({
       topics: [saved.query],
-      platforms: ['instagram'],
+      platforms: [saved.platform],
       cursor,
     });
     all.push(...(page.videos ?? []));
@@ -84,7 +89,7 @@ export async function refreshSavedSearch(
 
   let cached = 0;
   if (kept.length > 0) {
-    const rows = kept.map((v) => mapSearchVideo(v, saved.id));
+    const rows = kept.map((v) => mapSearchVideo(v, saved.id, saved.platform));
     const { data, error } = await supabase
       .from('reels')
       .upsert(rows, { onConflict: 'url' })

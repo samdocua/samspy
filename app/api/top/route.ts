@@ -1,28 +1,32 @@
-// SamSpy — Top Reels (tab 3)
-//   GET  /api/top          -> read cached top reels from DB (free)
-//   POST /api/top          -> fetch a fresh digest from Virlo ($0.25),
-//                             cache it (source='top'), return it
+// SamSpy — Top Reels (tab 3), per platform
+//   GET  /api/top?platform=instagram|tiktok  -> cached top (free)
+//   POST /api/top  {platform}                -> fresh digest ($0.25), cached
 //
 // Version history:
-//   v0.1.0 (2026-11-17) — Instagram 48h top-reels digest, cached in `reels`.
-//
-// Cost control: the paid Virlo call happens ONLY on POST (the "Refresh"
-// button). GET just reads what was cached, so opening the tab is free.
+//   v0.1.0 (2026-11-17) — Instagram 48h digest.
+//   v0.3.0 (2026-11-17) — platform-aware (Instagram + TikTok).
 
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase';
 import { refreshTopReels } from '@/lib/top';
 import { VirloError } from '@/lib/virlo';
+import type { Platform } from '@/lib/types/db';
 
 export const dynamic = 'force-dynamic';
 
+function readPlatform(v: string | null | undefined): Platform {
+  return v === 'tiktok' ? 'tiktok' : 'instagram';
+}
+
 // --- GET: cached top reels (free) ------------------------------------------
-export async function GET() {
+export async function GET(req: Request) {
+  const platform = readPlatform(new URL(req.url).searchParams.get('platform'));
   const supabase = createServiceClient();
   const { data, error } = await supabase
     .from('reels')
     .select('*')
     .eq('source', 'top')
+    .eq('platform', platform)
     .order('views', { ascending: false })
     .limit(60);
 
@@ -33,12 +37,19 @@ export async function GET() {
 }
 
 // --- POST: refresh from Virlo ($0.25) --------------------------------------
-export async function POST() {
+export async function POST(req: Request) {
+  let platform: Platform = 'instagram';
+  try {
+    platform = readPlatform((await req.json())?.platform);
+  } catch {
+    /* default instagram */
+  }
+
   const supabase = createServiceClient();
 
   let refreshedAt: string;
   try {
-    ({ refreshedAt } = await refreshTopReels(supabase, 60));
+    ({ refreshedAt } = await refreshTopReels(supabase, platform, 60));
   } catch (err) {
     const ve = err as VirloError;
     return NextResponse.json(
@@ -47,11 +58,11 @@ export async function POST() {
     );
   }
 
-  // Return the freshly-cached list, ranked by views.
   const { data, error } = await supabase
     .from('reels')
     .select('*')
     .eq('source', 'top')
+    .eq('platform', platform)
     .order('views', { ascending: false })
     .limit(60);
 

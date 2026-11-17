@@ -15,7 +15,7 @@ export const maxDuration = 60;
 
 // Explicit columns (plain select('*') was observed to drop rows on this project).
 const COLS =
-  'id,niche_id,username,display_name,avatar_url,bio,is_verified,' +
+  'id,platform,niche_id,username,display_name,avatar_url,bio,is_verified,' +
   'virlo_creator_id,virlo_status,scrape_cadence,latest_followers,' +
   'median_views,last_synced_at,created_at,updated_at';
 

@@ -96,14 +96,16 @@ async function virloFetch<T>(
 // ---------------------------------------------------------------------------
 
 export interface TrackCreatorInput {
-  /** Instagram username without @, e.g. "flamingoappreels". */
+  /** Username without @, e.g. "flamingoappreels". */
   handle: string;
+  /** Platform to track on. Defaults to instagram. */
+  platform?: VirloPlatform;
   /** How often Virlo re-checks the account. Defaults to daily. */
   cadence?: VirloCadence;
 }
 
 /**
- * Start tracking an Instagram creator. Costs $0.25 (covers the first check).
+ * Start tracking a creator on a platform. Costs $0.25 (covers the first check).
  * Returns Virlo's creator id — store it as competitors.virlo_creator_id.
  *
  * Throws VirloError:
@@ -119,7 +121,7 @@ export async function trackCreator(
     {
       method: 'POST',
       body: JSON.stringify({
-        platform: 'instagram',
+        platform: input.platform ?? 'instagram',
         handle: input.handle,
         scrape_cadence: input.cadence ?? 'daily',
       }),
@@ -202,11 +204,17 @@ export async function getCreatorSignals(
 // One request = $0.25 regardless of limit.
 // ---------------------------------------------------------------------------
 
-export async function instagramDigest(
+/**
+ * Top videos of the last ~48h for a platform, ordered by views.
+ *   GET /v1/instagram/videos/digest  or  /v1/tiktok/videos/digest
+ * Same response shape for both. One request = $0.25.
+ */
+export async function videoDigest(
+  platform: VirloPlatform,
   limit = 50
 ): Promise<VirloInstagramDigestItem[]> {
   const res = await virloFetch<VirloEnvelope<VirloInstagramDigestItem[]>>(
-    `/instagram/videos/digest?limit=${Math.min(Math.max(limit, 1), 100)}`
+    `/${platform}/videos/digest?limit=${Math.min(Math.max(limit, 1), 100)}`
   );
   return res.data;
 }

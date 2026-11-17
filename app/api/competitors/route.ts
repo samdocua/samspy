@@ -1,91 +1,100 @@
 // SamSpy — POST /api/competitors  (add a competitor to track)
-// GET  /api/competitors  (list tracked competitors)
+// GET  /api/competitors?platform=instagram|tiktok  (list tracked competitors)
 //
 // Version history:
-//   v0.1.0 (2026-11-17) — Add account: start Virlo tracking ($0.25) then
-//                         insert into DB. Idempotent on username.
-//
-// Flow:
-//   1. normalize @handle / instagram URL -> bare username
-//   2. insert competitor row (status pending)
-//   3. Virlo trackCreator -> store virlo_creator_id (status active)
-//   4. first sync happens on the next cron run (creator needs ~1-2 min to enrich)
+//   v0.1.0 (2026-11-17) — add account: Virlo tracking ($0.25) then insert.
+//   v0.3.0 (2026-11-17) — platform-aware (Instagram + TikTok); explicit
+//                         columns on list (plain select('*') dropped rows).
 
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase';
 import { trackCreator, VirloError } from '@/lib/virlo';
-import type { VirloCadence } from '@/lib/types/virlo';
+import type { VirloCadence, VirloPlatform } from '@/lib/types/virlo';
+import type { Competitor } from '@/lib/types/db';
 
-/** Pull a bare Instagram username from @handle, a URL, or a plain string. */
+const COLS =
+  'id,platform,niche_id,username,display_name,avatar_url,bio,is_verified,' +
+  'virlo_creator_id,virlo_status,scrape_cadence,latest_followers,' +
+  'median_views,last_synced_at,created_at,updated_at';
+
+/** Pull a bare username from @handle, an instagram/tiktok URL, or plain text. */
 function normalizeUsername(input: string): string | null {
   const s = input.trim();
   if (!s) return null;
-  // instagram.com/<username>/... or /reel/... — take the first path segment
-  const urlMatch = s.match(/instagram\.com\/([A-Za-z0-9._]+)/i);
+  const urlMatch = s.match(/(?:instagram|tiktok)\.com\/@?([A-Za-z0-9._]+)/i);
   if (urlMatch) {
     const seg = urlMatch[1].toLowerCase();
-    if (['reel', 'reels', 'p', 'explore', 'stories'].includes(seg)) return null;
+    if (['reel', 'reels', 'p', 'explore', 'stories', 'video'].includes(seg))
+      return null;
     return seg;
   }
-  // @handle or plain handle
   const handle = s.replace(/^@/, '').toLowerCase();
   return /^[a-z0-9._]+$/.test(handle) ? handle : null;
 }
 
 export async function POST(req: Request) {
-  let body: { username?: string; niche_id?: string; cadence?: VirloCadence };
+  let body: {
+    username?: string;
+    platform?: VirloPlatform;
+    niche_id?: string;
+    cadence?: VirloCadence;
+  };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
   }
 
+  const platform: VirloPlatform =
+    body.platform === 'tiktok' ? 'tiktok' : 'instagram';
   const username = normalizeUsername(body.username ?? '');
   if (!username) {
     return NextResponse.json(
-      { error: 'Provide a valid Instagram @username or profile URL.' },
+      { error: 'Укажите корректный @username или ссылку на профиль.' },
       { status: 400 }
     );
   }
 
   const supabase = createServiceClient();
 
-  // If we already track this username, return it (idempotent).
+  // Idempotent per platform.
   const { data: existing } = await supabase
     .from('competitors')
-    .select('*')
+    .select(COLS)
+    .eq('platform', platform)
     .eq('username', username)
-    .maybeSingle();
-  if (existing) {
+    .limit(1)
+    .returns<Competitor[]>();
+  if (existing && existing.length > 0) {
     return NextResponse.json(
-      { competitor: existing, message: 'Already tracked.' },
+      { competitor: existing[0], message: 'Уже отслеживается.' },
       { status: 200 }
     );
   }
 
-  // Insert a pending row first so the UI can show it immediately.
   const { data: inserted, error: insertErr } = await supabase
     .from('competitors')
     .insert({
+      platform,
       username,
       niche_id: body.niche_id ?? null,
       scrape_cadence: body.cadence ?? 'daily',
       virlo_status: 'pending',
     })
-    .select('*')
-    .single();
+    .select(COLS)
+    .single<Competitor>();
 
   if (insertErr || !inserted) {
     return NextResponse.json(
-      { error: insertErr?.message ?? 'Failed to insert competitor.' },
+      { error: insertErr?.message ?? 'Не удалось добавить аккаунт.' },
       { status: 500 }
     );
   }
 
-  // Start Virlo tracking ($0.25). On failure, mark the row failed but keep it.
   try {
     const tracked = await trackCreator({
       handle: username,
+      platform,
       cadence: body.cadence ?? 'daily',
     });
 
@@ -93,20 +102,15 @@ export async function POST(req: Request) {
       .from('competitors')
       .update({ virlo_creator_id: tracked.id, virlo_status: 'active' })
       .eq('id', inserted.id)
-      .select('*')
-      .single();
+      .select(COLS)
+      .single<Competitor>();
 
     return NextResponse.json(
-      {
-        competitor: updated ?? inserted,
-        message:
-          'Tracking started. First reels appear after the account enriches (~1–2 min), on the next sync.',
-      },
+      { competitor: updated ?? inserted, message: 'Трекинг запущен.' },
       { status: 201 }
     );
   } catch (err) {
     const ve = err as VirloError;
-    // 409 already tracked on the Virlo side — treat as active if we got an id.
     await supabase
       .from('competitors')
       .update({ virlo_status: 'failed' })
@@ -115,9 +119,7 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         competitor: inserted,
-        error:
-          ve?.message ??
-          'Virlo tracking failed. The account row was kept; retry later.',
+        error: ve?.message ?? 'Трекинг не удался. Аккаунт сохранён, попробуй позже.',
         code: ve?.code,
       },
       { status: ve?.status ?? 502 }
@@ -125,12 +127,15 @@ export async function POST(req: Request) {
   }
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  const platform = new URL(req.url).searchParams.get('platform') ?? 'instagram';
   const supabase = createServiceClient();
   const { data, error } = await supabase
     .from('competitors')
-    .select('*')
-    .order('created_at', { ascending: false });
+    .select(COLS)
+    .eq('platform', platform)
+    .order('created_at', { ascending: false })
+    .returns<Competitor[]>();
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

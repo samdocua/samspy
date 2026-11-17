@@ -14,8 +14,11 @@ export interface Niche {
 
 export type VirloStatus = 'pending' | 'active' | 'paused' | 'failed' | 'deleted';
 
+export type Platform = 'instagram' | 'tiktok';
+
 export interface Competitor {
   id: string;
+  platform: Platform;
   niche_id: string | null;
   username: string;
   display_name: string | null;
@@ -36,6 +39,7 @@ export type ReelSource = 'competitor' | 'search' | 'top';
 
 export interface Reel {
   id: string;
+  platform: Platform;
   source: ReelSource;
   competitor_id: string | null;
   saved_search_id: string | null;
@@ -69,6 +73,7 @@ export interface ReelWithCompetitor extends Reel {
 /** A saved search "block" (tab 2). */
 export interface SavedSearch {
   id: string;
+  platform: Platform;
   query: string;        // the raw topic string (may contain `|` synonyms)
   label: string | null; // display name for the block
   min_views: number;    // per-block minimum-views display filter
@@ -80,6 +85,7 @@ export interface SavedSearch {
 export interface BlacklistEntry {
   id: string;
   scope: 'search' | 'top';
+  platform: Platform;
   saved_search_id: string | null;
   username: string | null;
   author_external_id: string | null;

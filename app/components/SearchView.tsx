@@ -13,6 +13,7 @@ import type {
   ReelWithCompetitor,
   SavedSearchCard,
   BlacklistEntry,
+  Platform,
 } from '@/lib/types/db';
 import ReelCard from './ReelCard';
 
@@ -23,7 +24,7 @@ const VIEW_OPTIONS = [
   { label: '1M+', value: 1000000 },
 ];
 
-export default function SearchView() {
+export default function SearchView({ platform }: { platform: Platform }) {
   const [blocks, setBlocks] = useState<SavedSearchCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState<SavedSearchCard | null>(null);
@@ -31,11 +32,11 @@ export default function SearchView() {
 
   const loadBlocks = useCallback(async () => {
     setLoading(true);
-    const res = await fetch('/api/searches');
+    const res = await fetch(`/api/searches?platform=${platform}`);
     const data = await res.json();
     setBlocks(data.searches ?? []);
     setLoading(false);
-  }, []);
+  }, [platform]);
 
   useEffect(() => {
     loadBlocks();
@@ -61,7 +62,7 @@ export default function SearchView() {
 
   return (
     <div className="flex flex-col gap-5">
-      <CreateBlock onCreated={loadBlocks} />
+      <CreateBlock platform={platform} onCreated={loadBlocks} />
 
       {blocks.length > 0 && (
         <div className="flex justify-end">
@@ -99,7 +100,13 @@ export default function SearchView() {
 }
 
 // --- create ----------------------------------------------------------------
-function CreateBlock({ onCreated }: { onCreated: () => void }) {
+function CreateBlock({
+  platform,
+  onCreated,
+}: {
+  platform: Platform;
+  onCreated: () => void;
+}) {
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -113,7 +120,7 @@ function CreateBlock({ onCreated }: { onCreated: () => void }) {
       const res = await fetch('/api/searches', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: query.trim() }),
+        body: JSON.stringify({ query: query.trim(), platform }),
       });
       const data = await res.json();
       if (!res.ok && !data.search) {

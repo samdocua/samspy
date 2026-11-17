@@ -7,10 +7,14 @@
 
 import { useState } from 'react';
 
+import type { Platform } from '@/lib/types/db';
+
 export default function AddCompetitor({
+  platform,
   onAdded,
   onSynced,
 }: {
+  platform: Platform;
   onAdded?: () => void;              // reload the tracked-accounts chips
   onSynced?: () => void;            // reload the reel grid when reels arrive
 }) {
@@ -49,7 +53,7 @@ export default function AddCompetitor({
       const res = await fetch('/api/competitors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: value.trim() }),
+        body: JSON.stringify({ username: value.trim(), platform }),
       });
       const data = await res.json();
       if (!res.ok && !data.competitor) {

@@ -8,10 +8,14 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import type { ReelWithCompetitor, BlacklistEntry } from '@/lib/types/db';
+import type {
+  ReelWithCompetitor,
+  BlacklistEntry,
+  Platform,
+} from '@/lib/types/db';
 import ReelCard from './ReelCard';
 
-export default function TopReelsView() {
+export default function TopReelsView({ platform }: { platform: Platform }) {
   const [reels, setReels] = useState<ReelWithCompetitor[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -22,17 +26,17 @@ export default function TopReelsView() {
   // Free: read cached top reels.
   const loadCached = useCallback(async () => {
     setLoading(true);
-    const res = await fetch('/api/top');
+    const res = await fetch(`/api/top?platform=${platform}`);
     const data = await res.json();
     setReels(data.reels ?? []);
     setLoading(false);
-  }, []);
+  }, [platform]);
 
   useEffect(() => {
     loadCached();
   }, [loadCached]);
 
-  // Hide an author from Top Reels (blacklist by author id).
+  // Hide an author from Top (blacklist by author id).
   async function hideAuthor(reel: ReelWithCompetitor) {
     const authorId = reel.author_external_id;
     if (!authorId) {
@@ -46,6 +50,7 @@ export default function TopReelsView() {
       body: JSON.stringify({
         author_external_id: authorId,
         label: reel.caption?.slice(0, 40) || authorId,
+        platform,
       }),
     });
     loadCached();
@@ -57,7 +62,11 @@ export default function TopReelsView() {
     setRefreshing(true);
     setErr(null);
     try {
-      const res = await fetch('/api/top', { method: 'POST' });
+      const res = await fetch('/api/top', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform }),
+      });
       const data = await res.json();
       if (!res.ok) {
         setErr(data.error ?? 'Не удалось обновить.');
@@ -104,7 +113,9 @@ export default function TopReelsView() {
         </div>
       </div>
 
-      {showBlacklist && <TopBlacklist onChange={loadCached} />}
+      {showBlacklist && (
+        <TopBlacklist platform={platform} onChange={loadCached} />
+      )}
 
       {err && <p className="text-xs text-red-600">{err}</p>}
 
@@ -127,15 +138,21 @@ export default function TopReelsView() {
   );
 }
 
-// --- Top Reels blacklist manager (remove entries) --------------------------
-function TopBlacklist({ onChange }: { onChange: () => void }) {
+// --- Top blacklist manager (remove entries) --------------------------------
+function TopBlacklist({
+  platform,
+  onChange,
+}: {
+  platform: Platform;
+  onChange: () => void;
+}) {
   const [list, setList] = useState<BlacklistEntry[]>([]);
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/top/blacklist');
+    const res = await fetch(`/api/top/blacklist?platform=${platform}`);
     const data = await res.json();
     setList(data.blacklist ?? []);
-  }, []);
+  }, [platform]);
 
   useEffect(() => {
     load();

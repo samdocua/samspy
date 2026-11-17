@@ -14,12 +14,14 @@ import type { SavedSearch, SavedSearchCard } from '@/lib/types/db';
 export const dynamic = 'force-dynamic';
 
 // --- GET: list blocks with counts + covers ---------------------------------
-export async function GET() {
+export async function GET(req: Request) {
+  const platform = new URL(req.url).searchParams.get('platform') ?? 'instagram';
   const supabase = createServiceClient();
 
   const { data: searches, error } = await supabase
     .from('saved_searches')
-    .select('*')
+    .select('id,platform,query,label,min_views,last_run_at,created_at')
+    .eq('platform', platform)
     .order('created_at', { ascending: false })
     .returns<SavedSearch[]>();
 
@@ -55,7 +57,7 @@ export async function GET() {
 
 // --- POST: create a block + first search -----------------------------------
 export async function POST(req: Request) {
-  let body: { query?: string; label?: string };
+  let body: { query?: string; label?: string; platform?: string };
   try {
     body = await req.json();
   } catch {
@@ -70,13 +72,14 @@ export async function POST(req: Request) {
     );
   }
 
+  const platform = body.platform === 'tiktok' ? 'tiktok' : 'instagram';
   const supabase = createServiceClient();
 
   // Create the block.
   const { data: saved, error: insErr } = await supabase
     .from('saved_searches')
-    .insert({ query, label: (body.label ?? query).trim() })
-    .select('*')
+    .insert({ query, label: (body.label ?? query).trim(), platform })
+    .select('id,platform,query,label,min_views,last_run_at,created_at')
     .single();
 
   if (insErr || !saved) {

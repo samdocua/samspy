@@ -16,6 +16,7 @@ export async function GET(req: Request) {
   const p = url.searchParams;
 
   const source = p.get('source') ?? 'competitor';
+  const platform = p.get('platform') ?? 'instagram';
   const nicheId = p.get('niche_id');
   const competitorId = p.get('competitor_id');
   const minOutlier = Number(p.get('min_outlier') ?? 0);
@@ -32,7 +33,8 @@ export async function GET(req: Request) {
     .select(
       `*, competitor:competitors(id, username, display_name, avatar_url, niche_id)`
     )
-    .eq('source', source);
+    .eq('source', source)
+    .eq('platform', platform);
 
   if (competitorId) q = q.eq('competitor_id', competitorId);
   if (minOutlier > 0) q = q.gte('outlier_ratio', minOutlier);

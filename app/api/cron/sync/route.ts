@@ -42,7 +42,7 @@ export async function GET(req: Request) {
   // to silently drop rows on this project's PostgREST), then filter in JS for
   // the ones Virlo is actively tracking. Robust against that quirk.
   const COLS =
-    'id,niche_id,username,display_name,avatar_url,bio,is_verified,' +
+    'id,platform,niche_id,username,display_name,avatar_url,bio,is_verified,' +
     'virlo_creator_id,virlo_status,scrape_cadence,latest_followers,' +
     'median_views,last_synced_at,created_at,updated_at';
 
@@ -76,27 +76,29 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
 
-  // Refresh the Top Reels digest once per run ($0.25). Pass ?skipTop=1 to skip
-  // (e.g. a manual mid-day sync where you don't want to pay for the digest).
-  let top: { fetched: number; cached: number } | null = null;
+  // Refresh the Top digest for BOTH platforms ($0.25 each). ?skipTop=1 skips.
+  let top = 0;
   if (url.searchParams.get('skipTop') !== '1') {
-    try {
-      const r = await refreshTopReels(supabase, 60);
-      top = { fetched: r.fetched, cached: r.cached };
-    } catch (err) {
-      errors.push({
-        username: '(top digest)',
-        error: err instanceof Error ? err.message : String(err),
-      });
+    for (const platform of ['instagram', 'tiktok'] as const) {
+      try {
+        await refreshTopReels(supabase, platform, 60);
+        top++;
+      } catch (err) {
+        errors.push({
+          username: `(top: ${platform})`,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 
-  // Refresh each saved-search block (~$0.10 each). Pass ?skipSearch=1 to skip.
+  // Refresh each saved-search block on its own platform (~$0.10 each).
+  // ?skipSearch=1 skips.
   let searches = 0;
   if (url.searchParams.get('skipSearch') !== '1') {
     const { data: blocks } = await supabase
       .from('saved_searches')
-      .select('id,query,label,min_views,last_run_at,created_at')
+      .select('id,platform,query,label,min_views,last_run_at,created_at')
       .returns<SavedSearch[]>();
     for (const b of blocks ?? []) {
       try {

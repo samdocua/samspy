@@ -25,14 +25,16 @@ export async function searchBlacklistUsernames(
   );
 }
 
-/** Author external ids blacklisted for Top Reels. */
+/** Author external ids blacklisted for Top on a platform. */
 export async function topBlacklistAuthorIds(
-  supabase: SupabaseClient
+  supabase: SupabaseClient,
+  platform: string
 ): Promise<Set<string>> {
   const { data } = await supabase
     .from('blacklist')
     .select('author_external_id')
-    .eq('scope', 'top');
+    .eq('scope', 'top')
+    .eq('platform', platform);
   return new Set(
     (data ?? []).map((r) => r.author_external_id).filter(Boolean) as string[]
   );

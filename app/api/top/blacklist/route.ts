@@ -11,12 +11,18 @@ import { createServiceClient } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+function readPlatform(v: string | null | undefined): string {
+  return v === 'tiktok' ? 'tiktok' : 'instagram';
+}
+
+export async function GET(req: Request) {
+  const platform = readPlatform(new URL(req.url).searchParams.get('platform'));
   const supabase = createServiceClient();
   const { data, error } = await supabase
     .from('blacklist')
     .select('*')
     .eq('scope', 'top')
+    .eq('platform', platform)
     .order('created_at', { ascending: false });
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -25,7 +31,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  let body: { author_external_id?: string; label?: string };
+  let body: { author_external_id?: string; label?: string; platform?: string };
   try {
     body = await req.json();
   } catch {
@@ -35,6 +41,7 @@ export async function POST(req: Request) {
   if (!authorId) {
     return NextResponse.json({ error: 'Missing author id.' }, { status: 400 });
   }
+  const platform = readPlatform(body.platform);
 
   const supabase = createServiceClient();
 
@@ -42,22 +49,25 @@ export async function POST(req: Request) {
     .from('blacklist')
     .select('id')
     .eq('scope', 'top')
+    .eq('platform', platform)
     .eq('author_external_id', authorId)
     .maybeSingle();
 
   if (!existing) {
     await supabase.from('blacklist').insert({
       scope: 'top',
+      platform,
       author_external_id: authorId,
       label: body.label ?? authorId,
     });
   }
 
-  // Purge this author's already-cached top reels.
+  // Purge this author's already-cached top reels on this platform.
   await supabase
     .from('reels')
     .delete()
     .eq('source', 'top')
+    .eq('platform', platform)
     .eq('author_external_id', authorId);
 
   return NextResponse.json({ ok: true });

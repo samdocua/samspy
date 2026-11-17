@@ -44,7 +44,8 @@ function mapPostToReel(
   post: VirloCreatorPost,
   competitorId: string,
   fallbackMedian: number,
-  basis: OutlierBasis
+  basis: OutlierBasis,
+  platform: string
 ) {
   // Prefer Virlo's own ratio; else compute from our median of the basis metric.
   let ratio = post.outlier_ratio;
@@ -58,6 +59,7 @@ function mapPostToReel(
   return {
     source: 'competitor' as const,
     competitor_id: competitorId,
+    platform,
     url: post.url,
     external_id: post.platform_video_id ?? null,
     thumbnail_url: post.thumbnail_url ?? null,
@@ -146,7 +148,7 @@ export async function syncCompetitor(
 
   // Map + upsert reels (conflict on url -> update metrics in place).
   const rows = posts.map((p) =>
-    mapPostToReel(p, competitor.id, fallbackMedian, basis)
+    mapPostToReel(p, competitor.id, fallbackMedian, basis, competitor.platform)
   );
 
   const { data: upserted, error: upsertErr } = await supabase

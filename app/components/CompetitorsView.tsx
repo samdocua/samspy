@@ -5,14 +5,14 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import type { ReelWithCompetitor, Competitor } from '@/lib/types/db';
+import type { ReelWithCompetitor, Competitor, Platform } from '@/lib/types/db';
 import ReelCard from './ReelCard';
 import AddCompetitor from './AddCompetitor';
 import FiltersBar, { type Filters } from './FiltersBar';
 
 const PAGE = 60;
 
-export default function CompetitorsView() {
+export default function CompetitorsView({ platform }: { platform: Platform }) {
   const [reels, setReels] = useState<ReelWithCompetitor[]>([]);
   const [competitors, setCompetitors] = useState<Competitor[]>([]);
   const [loading, setLoading] = useState(true);
@@ -34,6 +34,7 @@ export default function CompetitorsView() {
     (offset: number) => {
       const params = new URLSearchParams({
         source: 'competitor',
+        platform,
         min_outlier: String(filters.minOutlier),
         min_views: String(filters.minViews),
         sort: filters.sort,
@@ -44,7 +45,7 @@ export default function CompetitorsView() {
       if (selected) params.set('competitor_id', selected);
       return params;
     },
-    [filters, selected]
+    [filters, selected, platform]
   );
 
   // Load the first page (replaces the grid).
@@ -69,10 +70,10 @@ export default function CompetitorsView() {
   }
 
   const loadCompetitors = useCallback(async () => {
-    const res = await fetch('/api/competitors');
+    const res = await fetch(`/api/competitors?platform=${platform}`);
     const data = await res.json();
     setCompetitors(data.competitors ?? []);
-  }, []);
+  }, [platform]);
 
   async function deleteCompetitor(c: Competitor) {
     if (!confirm(`Перестать отслеживать @${c.username} и удалить его ролики?`))
@@ -117,7 +118,11 @@ export default function CompetitorsView() {
             )}
           </div>
         </div>
-        <AddCompetitor onAdded={loadCompetitors} onSynced={loadReels} />
+        <AddCompetitor
+          platform={platform}
+          onAdded={loadCompetitors}
+          onSynced={loadReels}
+        />
         {competitors.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {competitors.map((c) => {

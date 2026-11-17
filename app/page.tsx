@@ -1,9 +1,12 @@
-// SamSpy — home page with the three tabs
-//   v0.1.0 (2026-11-17) — tabs; competitors + top live.
+// SamSpy — home page
+//   v0.1.0 (2026-11-17) — three tabs; competitors + top live.
 //   v0.1.1 (2026-11-17) — logout button (auth).
+//   v0.3.0 (2026-11-17) — platform pills (Instagram | TikTok) above the tabs;
+//                         each platform has its own three tabs + data.
 'use client';
 
 import { useState } from 'react';
+import type { Platform } from '@/lib/types/db';
 import CompetitorsView from './components/CompetitorsView';
 import TopReelsView from './components/TopReelsView';
 import SearchView from './components/SearchView';
@@ -18,16 +21,22 @@ type Tab = 'competitors' | 'search' | 'top';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'competitors', label: 'По конкурентам' },
   { id: 'search', label: 'По поисковым запросам' },
-  { id: 'top', label: 'Топ Reels' },
+  { id: 'top', label: 'Топ' },
+];
+
+const PLATFORMS: { id: Platform; label: string }[] = [
+  { id: 'instagram', label: 'Instagram' },
+  { id: 'tiktok', label: 'TikTok' },
 ];
 
 export default function Home() {
+  const [platform, setPlatform] = useState<Platform>('instagram');
   const [tab, setTab] = useState<Tab>('competitors');
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-6">
       {/* brand + logout */}
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-5 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent font-bold text-white">
             S
@@ -40,6 +49,26 @@ export default function Home() {
         >
           Выйти
         </button>
+      </div>
+
+      {/* platform pills */}
+      <div className="mb-5 flex gap-2">
+        {PLATFORMS.map((pf) => {
+          const active = platform === pf.id;
+          return (
+            <button
+              key={pf.id}
+              onClick={() => setPlatform(pf.id)}
+              className={`rounded-full px-4 py-1.5 text-sm font-medium transition ${
+                active
+                  ? 'bg-accent text-white'
+                  : 'border border-edge bg-white text-muted hover:text-gray-900'
+              }`}
+            >
+              {pf.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* tabs */}
@@ -59,10 +88,12 @@ export default function Home() {
         ))}
       </div>
 
-      {/* content */}
-      {tab === 'competitors' && <CompetitorsView />}
-      {tab === 'search' && <SearchView />}
-      {tab === 'top' && <TopReelsView />}
+      {/* content — keyed by platform so switching resets view state */}
+      {tab === 'competitors' && (
+        <CompetitorsView key={platform} platform={platform} />
+      )}
+      {tab === 'search' && <SearchView key={platform} platform={platform} />}
+      {tab === 'top' && <TopReelsView key={platform} platform={platform} />}
     </main>
   );
 }
