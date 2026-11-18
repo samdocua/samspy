@@ -5,6 +5,8 @@
 //                         each platform has its own three tabs + data.
 //   v0.4.0 (2026-11-18) — «Слайды» tab (AI slide generator). Not tied to a
 //                         platform, so the platform pills hide on it.
+//   v0.5.0 (2026-11-18) — merged «Карусели» tab (Instagram only): carousel slide
+//                         texts via Apify + Claude OCR (from the carousels branch).
 'use client';
 
 import { useState } from 'react';
@@ -13,18 +15,21 @@ import CompetitorsView from './components/CompetitorsView';
 import TopReelsView from './components/TopReelsView';
 import SearchView from './components/SearchView';
 import SlidesView from './components/SlidesView';
+import CarouselsView from './components/CarouselsView';
 
 async function logout() {
   await fetch('/api/auth/logout', { method: 'POST' });
   window.location.href = '/login';
 }
 
-type Tab = 'competitors' | 'search' | 'top' | 'slides';
+type Tab = 'competitors' | 'search' | 'top' | 'carousels' | 'slides';
 
-const TABS: { id: Tab; label: string }[] = [
+// platforms: tab shown only for these platforms (omit = all platforms)
+const TABS: { id: Tab; label: string; platforms?: Platform[] }[] = [
   { id: 'competitors', label: 'По конкурентам' },
   { id: 'search', label: 'По поисковым запросам' },
   { id: 'top', label: 'Топ' },
+  { id: 'carousels', label: 'Карусели', platforms: ['instagram'] },
   { id: 'slides', label: 'Слайды' },
 ];
 
@@ -63,7 +68,12 @@ export default function Home() {
             return (
               <button
                 key={pf.id}
-                onClick={() => setPlatform(pf.id)}
+                onClick={() => {
+                  setPlatform(pf.id);
+                  // «Карусели» exists only for Instagram
+                  const t = TABS.find((x) => x.id === tab);
+                  if (t?.platforms && !t.platforms.includes(pf.id)) setTab('competitors');
+                }}
                 className={`rounded-full px-4 py-1.5 text-sm font-medium transition ${
                   active
                     ? 'bg-accent text-white'
@@ -79,7 +89,7 @@ export default function Home() {
 
       {/* tabs */}
       <div className="mb-6 flex gap-1 border-b border-edge">
-        {TABS.map((t) => (
+        {TABS.filter((t) => !t.platforms || t.platforms.includes(platform)).map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
@@ -100,6 +110,7 @@ export default function Home() {
       )}
       {tab === 'search' && <SearchView key={platform} platform={platform} />}
       {tab === 'top' && <TopReelsView key={platform} platform={platform} />}
+      {tab === 'carousels' && platform === 'instagram' && <CarouselsView />}
       {/* slides stays mounted so generated images survive tab switches */}
       <div className={tab === 'slides' ? '' : 'hidden'}>
         <SlidesView visible={tab === 'slides'} />

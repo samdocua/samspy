@@ -45,6 +45,12 @@ Open http://localhost:3000.
 Outlier ratio = views ÷ the creator's median views. A reel is flagged viral at
 `ratio ≥ 3` (Virlo's own threshold; adjustable via the slider).
 
+## Карусели (Instagram)
+Сбор текстов со слайдов каруселей по списку ссылок: Apify тянет посты, Claude
+распознаёт текст (Haiku → перепроверка сомнительных слайдов Sonnet), результат —
+таблица + CSV. Таблицы — `supabase/migration-004.sql`, ключи `APIFY_TOKEN`,
+`ANTHROPIC_API_KEY`.
+
 ## Слайды
 Вкладка-генератор слайдов для каруселей: фото-пример (загрузка / drag / Cmd+V) →
 перегенерация через Gemini (напрямую) или GPT Image через fal.ai (`POST /api/slides/generate`) → наложение
@@ -70,3 +76,4 @@ Reading the catalog is free.
   текст поверх в стиле TikTok, скачивание JPEG); sharp для перекодирования.
 - v0.4.1 (2026-11-18) — GPT Image через fal.ai (2.6/2.5 Flare+Sunburst, 2) вместо
   прямого OpenAI — без верификации организации. `OPENAI_API_KEY` → `FAL_KEY`.
+- v0.5.0 (2026-11-18) — вкладка «Карусели» (Apify + Claude OCR), migration-004.
