@@ -6,11 +6,13 @@
 // Version history:
 //   v0.4.0 (2026-11-18) — create job, jobs list with progress, result table (one post per row),
 //                         CSV download, copy for Google Sheets.
+//   v0.5.0 (2026-11-18) — table cells use joinSoftBreaks (layout line wraps glued).
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CarouselJobCard, CarouselPostFull, CarouselJobStatus } from '@/lib/carousels/types';
 import { buildTable, toTsv } from '@/lib/carousels/table';
+import { joinSoftBreaks } from '@/lib/carousels/postprocess';
 
 const STATUS: Record<CarouselJobStatus, { label: string; cls: string }> = {
   apify: { label: 'Apify собирает посты', cls: 'bg-amber-50 text-amber-700' },
@@ -365,8 +367,11 @@ function PostRow({ post, slideCols }: { post: CarouselPostFull; slideCols: numbe
   const cover = post.slides[0]?.image_url;
   const isBody = (s: CarouselPostFull['slides'][number]) =>
     (s.role === 'body' || s.role === 'body+cta') && !!s.text;
-  const hook = post.slides.find((s) => s.role === 'hook')?.text ?? '';
-  const cta = post.slides.filter((s) => s.cta_text).map((s) => s.cta_text).join('\n\n');
+  const hook = joinSoftBreaks(post.slides.find((s) => s.role === 'hook')?.text ?? '');
+  const cta = post.slides
+    .filter((s) => s.cta_text)
+    .map((s) => joinSoftBreaks(s.cta_text ?? ''))
+    .join('\n\n');
   const escalated = post.slides.filter((s) => s.check_status === 'escalated').map((s) => s.idx);
 
   return (
@@ -395,7 +400,7 @@ function PostRow({ post, slideCols }: { post: CarouselPostFull; slideCols: numbe
         const s = post.slides.find((x) => x.idx === i && isBody(x));
         return (
           <td key={i} className={cell}>
-            {s?.text ?? ''}
+            {joinSoftBreaks(s?.text ?? '')}
           </td>
         );
       })}

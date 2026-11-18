@@ -5,8 +5,11 @@
 //
 // Version history:
 //   v0.4.0 (2026-11-18) — buildTable, toCsv, toTsv.
+//   v0.5.0 (2026-11-18) — slide texts pass through joinSoftBreaks (also fixes
+//                         already collected posts, since it runs at read time).
 
 import type { CarouselPostFull } from './types';
+import { joinSoftBreaks } from './postprocess';
 
 const isBody = (s: { role: string | null; text: string | null }) =>
   (s.role === 'body' || s.role === 'body+cta') && !!s.text;
@@ -30,12 +33,12 @@ export function buildTable(posts: CarouselPostFull[]): PostsTable {
   ];
 
   const rows = posts.map((p) => {
-    const hook = p.slides.filter((s) => s.role === 'hook').map((s) => s.text ?? '').join('\n\n');
+    const hook = p.slides.filter((s) => s.role === 'hook').map((s) => joinSoftBreaks(s.text ?? '')).join('\n\n');
     const body = slideCols.map((i) => {
       const s = p.slides.find((x) => x.idx === i && isBody(x));
-      return s?.text ?? '';
+      return joinSoftBreaks(s?.text ?? '');
     });
-    const cta = p.slides.filter((s) => s.cta_text).map((s) => s.cta_text as string).join('\n\n');
+    const cta = p.slides.filter((s) => s.cta_text).map((s) => joinSoftBreaks(s.cta_text as string)).join('\n\n');
     const escalated = p.slides
       .filter((s) => s.check_status === 'escalated')
       .map((s) => s.idx)

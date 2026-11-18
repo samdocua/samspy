@@ -9,11 +9,42 @@
 //
 // Version history:
 //   v0.4.0 (2026-11-18) — port of carousels.js v1.7 postProcess + dedupeLines.
+//   v0.5.0 (2026-11-18) — joinSoftBreaks(): glue visual line wraps inside a phrase,
+//                         keep breaks before list items / after sentence ends / blank lines.
 
 import { CTA_PATTERNS } from './prompts';
 import type { LastSplit, SlideRole } from './types';
 
 const QUIZ_OPTION = /^\s*[A-Da-d][\).:]\s+\S/;
+
+// A line that must stay on its own: quiz option, numbered/bulleted item.
+const LIST_ITEM = /^\s*(?:[A-Da-d][\).:]|\d{1,2}[\).:]|[-–—•*·])\s+\S/;
+// Previous line ends a sentence/clause → keep the break.
+const HARD_END = /[.?!:;…)"»”]\s*$/;
+
+/**
+ * Glues line wraps that only come from the slide layout ("What's a little habit of mine /
+ * you / secretly love?" → one line). Keeps: blank lines (paragraphs), breaks before list items
+ * (A) B) 1. -), breaks after a list item, and breaks after sentence-ending punctuation.
+ */
+export function joinSoftBreaks(text: string): string {
+  return String(text || '')
+    .split(/\n\s*\n/)
+    .map((para) => {
+      const out: string[] = [];
+      for (const raw of para.split('\n')) {
+        const line = raw.trim();
+        if (!line) continue;
+        const prev = out[out.length - 1];
+        const glue = prev !== undefined && !LIST_ITEM.test(line) && !LIST_ITEM.test(prev) && !HARD_END.test(prev);
+        if (glue) out[out.length - 1] = `${prev} ${line}`;
+        else out.push(line);
+      }
+      return out.join('\n');
+    })
+    .filter(Boolean)
+    .join('\n\n');
+}
 
 /** Removes repeated lines (case-insensitive), keeps the first occurrence and blank-line spacing. */
 export function dedupeLines(text: string): string {
