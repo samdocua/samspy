@@ -24,6 +24,8 @@ Copy `.env.example` to `.env.local` and fill in:
 - `SUPABASE_SERVICE_ROLE_KEY` — same page (secret)
 - `VIRLO_API_KEY` — dev.virlo.ai → dashboard → API keys (`virlo_tkn_...`)
 - `SAMSPY_SECRET` — `openssl rand -hex 32`
+- `GEMINI_API_KEY` — aistudio.google.com → Get API key (вкладка «Слайды»)
+- `FAL_KEY` — fal.ai/dashboard/keys (вкладка «Слайды», модели GPT Image)
 
 ### 3. Run
 ```bash
@@ -43,6 +45,14 @@ Open http://localhost:3000.
 Outlier ratio = views ÷ the creator's median views. A reel is flagged viral at
 `ratio ≥ 3` (Virlo's own threshold; adjustable via the slider).
 
+## Слайды
+Вкладка-генератор слайдов для каруселей: фото-пример (загрузка / drag / Cmd+V) →
+перегенерация через Gemini (напрямую) или GPT Image через fal.ai (`POST /api/slides/generate`) → наложение
+текста на canvas в браузере → JPEG 1080 px. Картинки живут в памяти до
+перезагрузки, настройки — в localStorage (экспорт/импорт JSON). Стоимость под
+кнопкой — оценка по токенам для Gemini (цены в `lib/slides/config.ts`); для fal
+стоимость видна только в биллинге fal.
+
 ## Manual sync (before the cron runs)
 ```bash
 curl "http://localhost:3000/api/cron/sync?secret=YOUR_SAMSPY_SECRET"
@@ -56,3 +66,7 @@ Reading the catalog is free.
 - v0.1.0 (2026-11-17) — tab 1 (competitors) complete.
 - v0.1.1 (2026-11-17) — outlier falls back to likes when IG views are 0;
   grid shows all reels (slider filters); light theme; card padding.
+- v0.4.0 (2026-11-18) — вкладка «Слайды» (Gemini 3.1 Flash Image / gpt-image-2,
+  текст поверх в стиле TikTok, скачивание JPEG); sharp для перекодирования.
+- v0.4.1 (2026-11-18) — GPT Image через fal.ai (2.6/2.5 Flare+Sunburst, 2) вместо
+  прямого OpenAI — без верификации организации. `OPENAI_API_KEY` → `FAL_KEY`.

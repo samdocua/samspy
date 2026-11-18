@@ -3,6 +3,8 @@
 //   v0.1.1 (2026-11-17) — logout button (auth).
 //   v0.3.0 (2026-11-17) — platform pills (Instagram | TikTok) above the tabs;
 //                         each platform has its own three tabs + data.
+//   v0.4.0 (2026-11-18) — «Слайды» tab (AI slide generator). Not tied to a
+//                         platform, so the platform pills hide on it.
 'use client';
 
 import { useState } from 'react';
@@ -10,18 +12,20 @@ import type { Platform } from '@/lib/types/db';
 import CompetitorsView from './components/CompetitorsView';
 import TopReelsView from './components/TopReelsView';
 import SearchView from './components/SearchView';
+import SlidesView from './components/SlidesView';
 
 async function logout() {
   await fetch('/api/auth/logout', { method: 'POST' });
   window.location.href = '/login';
 }
 
-type Tab = 'competitors' | 'search' | 'top';
+type Tab = 'competitors' | 'search' | 'top' | 'slides';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'competitors', label: 'По конкурентам' },
   { id: 'search', label: 'По поисковым запросам' },
   { id: 'top', label: 'Топ' },
+  { id: 'slides', label: 'Слайды' },
 ];
 
 const PLATFORMS: { id: Platform; label: string }[] = [
@@ -51,25 +55,27 @@ export default function Home() {
         </button>
       </div>
 
-      {/* platform pills */}
-      <div className="mb-5 flex gap-2">
-        {PLATFORMS.map((pf) => {
-          const active = platform === pf.id;
-          return (
-            <button
-              key={pf.id}
-              onClick={() => setPlatform(pf.id)}
-              className={`rounded-full px-4 py-1.5 text-sm font-medium transition ${
-                active
-                  ? 'bg-accent text-white'
-                  : 'border border-edge bg-white text-muted hover:text-gray-900'
-              }`}
-            >
-              {pf.label}
-            </button>
-          );
-        })}
-      </div>
+      {/* platform pills — not shown on the slides tab */}
+      {tab !== 'slides' && (
+        <div className="mb-5 flex gap-2">
+          {PLATFORMS.map((pf) => {
+            const active = platform === pf.id;
+            return (
+              <button
+                key={pf.id}
+                onClick={() => setPlatform(pf.id)}
+                className={`rounded-full px-4 py-1.5 text-sm font-medium transition ${
+                  active
+                    ? 'bg-accent text-white'
+                    : 'border border-edge bg-white text-muted hover:text-gray-900'
+                }`}
+              >
+                {pf.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* tabs */}
       <div className="mb-6 flex gap-1 border-b border-edge">
@@ -94,6 +100,10 @@ export default function Home() {
       )}
       {tab === 'search' && <SearchView key={platform} platform={platform} />}
       {tab === 'top' && <TopReelsView key={platform} platform={platform} />}
+      {/* slides stays mounted so generated images survive tab switches */}
+      <div className={tab === 'slides' ? '' : 'hidden'}>
+        <SlidesView visible={tab === 'slides'} />
+      </div>
     </main>
   );
 }
