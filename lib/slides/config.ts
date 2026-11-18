@@ -10,6 +10,14 @@
 //   v0.2.0 (2026-11-18) — GPT Image via fal.ai instead of OpenAI direct (no org
 //                         verification): 2.6 / 2.5 Flare + Sunburst, 2 Edit.
 //                         Price is optional (fal returns no usage → no estimate).
+//   v0.3.0 (2026-11-18) — default model GPT Image 2.6 Flare (fal); new default
+//                         prompt that keeps architecture intact.
+//   v0.3.1 (2026-11-18) — default text: size 6, center, TikTok 1, offset -43.
+//   v0.4.0 (2026-11-18) — «TikTok Classic» style (TikTok Sans 500, thin outline).
+//   v0.4.1 (2026-11-18) — «TikTok Classic (тонкая)» copy with a thinner outline.
+//   v0.4.2 (2026-11-18) — thin copy removed (regular Classic won); default text
+//                         style TikTok Classic, size 4%.
+//   v0.5.0 (2026-11-18) — Instagram A/B styles: IG Classic, IG Modern, Montserrat.
 
 export type Provider = 'gemini' | 'fal';
 
@@ -105,11 +113,22 @@ export const TEXT_POSITIONS: { id: TextPosition; label: string }[] = [
   { id: 'bottom', label: 'Низ' },
 ];
 
-export type TextStyleId = 'tiktok1' | 'tiktok2' | 'tiktok3';
+export type TextStyleId =
+  | 'tiktok1'
+  | 'tiktok2'
+  | 'tiktok3'
+  | 'classic'
+  | 'igClassic'
+  | 'igModern'
+  | 'montserrat';
 export const TEXT_STYLES: { id: TextStyleId; label: string }[] = [
   { id: 'tiktok1', label: 'TikTok 1 — обводка' },
   { id: 'tiktok2', label: 'TikTok 2 — белая плашка' },
   { id: 'tiktok3', label: 'TikTok 3 — чёрная плашка' },
+  { id: 'classic', label: 'TikTok Classic — как в приложении' },
+  { id: 'igClassic', label: 'Instagram Classic (Instrument Sans)' },
+  { id: 'igModern', label: 'Instagram Modern (Gabarito)' },
+  { id: 'montserrat', label: 'Montserrat (карусели в Canva)' },
 ];
 
 // --- settings ----------------------------------------------------------------
@@ -126,22 +145,25 @@ export interface SlidesSettings {
   textMaxWidth: number; // wrap width, % of slide width
 }
 
+// v0.3.0: keep landmarks/architecture intact, change the camera only slightly —
+// a bigger shift made models invent unseen geometry (broken Brooklyn Bridge).
 export const DEFAULT_PROMPT =
-  'Take a new photo of the same place as in the reference image, at the target aspect ratio. ' +
-  'Keep the same scene, objects, colors, lighting and mood. Adapt the framing to the new format ' +
-  'and shift the camera a little (slightly different angle, distance or small details) so it reads ' +
-  'as a fresh photo of the same place rather than a copy. Photorealistic, shot on a phone, no watermark.';
+  'Recreate this exact photo as a new phone shot of the same place, at the target aspect ratio. ' +
+  'Keep every landmark and structure exactly as in the reference — same bridge geometry, towers, ' +
+  'arches, cables and buildings. Only change the camera very slightly (a few steps left/right or a ' +
+  'small zoom) and small natural details: people, cars, waves, clouds, lights. Do not invent or ' +
+  'redraw architecture. Photorealistic, shot on a phone, no watermark.';
 
 export const DEFAULT_SETTINGS: SlidesSettings = {
   prompt: DEFAULT_PROMPT,
-  modelId: IMAGE_MODELS[0].id,
+  modelId: 'openai/gpt-image-2.6/flare/edit',
   aspect: '3:4',
   size: '1K',
   quality: 'medium',
-  textSize: 7,
+  textSize: 4,
   textPosition: 'center',
-  textStyle: 'tiktok3',
-  textOffset: 0,
+  textStyle: 'classic',
+  textOffset: -43,
   textMaxWidth: 72,
 };
 

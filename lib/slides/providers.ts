@@ -12,6 +12,8 @@
 //   v0.2.0 (2026-11-18) — OpenAI direct replaced by fal.ai (GPT Image without
 //                         OpenAI org verification). Reference sent as a data
 //                         URI, result returned inline via sync_mode.
+//   v0.3.0 (2026-11-18) — falAvgCost(): average historical price per call from
+//                         fal Platform API (pricing/estimate), cached 1 h.
 
 import {
   gptImageSize,
@@ -187,4 +189,37 @@ async function generateFal(input: GenInput): Promise<GenOutput> {
 
   // fal doesn't report token usage — the cost is only in the fal billing.
   return { data, usage: { textIn: 0, imageIn: 0, imageOut: 0 } };
+}
+
+// --- fal: average price per call ------------------------------------------------
+// fal's sync response has no cost, so we ask the Platform API for the average
+// historical price of one call to this endpoint. Cached per model for 1 hour.
+const FAL_PRICE_TTL = 60 * 60 * 1000;
+const falPriceCache = new Map<string, { value: number; at: number }>();
+
+export async function falAvgCost(modelId: string): Promise<number | null> {
+  const hit = falPriceCache.get(modelId);
+  if (hit && Date.now() - hit.at < FAL_PRICE_TTL) return hit.value;
+
+  const key = process.env.FAL_KEY;
+  if (!key) return null;
+  try {
+    const res = await fetch('https://api.fal.ai/v1/models/pricing/estimate', {
+      method: 'POST',
+      headers: { Authorization: `Key ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        estimate_type: 'historical_api_price',
+        endpoints: { [modelId]: { call_quantity: 1 } },
+      }),
+    });
+    if (!res.ok) return null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const json: any = await res.json().catch(() => null);
+    const value = Number(json?.total_cost);
+    if (!Number.isFinite(value) || value <= 0) return null;
+    falPriceCache.set(modelId, { value, at: Date.now() });
+    return value;
+  } catch {
+    return null; // cost is informational — never fail the generation over it
+  }
 }

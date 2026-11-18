@@ -12,6 +12,8 @@
 //   v0.1.0 (2026-11-18) — Gemini + OpenAI, JPEG re-encode, cost estimate.
 //   v0.2.0 (2026-11-18) — GPT Image via fal.ai; costUsd may be null (no usage
 //                         from fal); maxDuration 300 for slow high-quality runs.
+//   v0.3.0 (2026-11-18) — fal cost = average price per call (Platform API);
+//                         response adds costKind: 'tokens' | 'avg'.
 
 import { NextResponse } from 'next/server';
 import sharp from 'sharp';
@@ -25,7 +27,7 @@ import {
   type ImageSize,
   type GptQuality,
 } from '@/lib/slides/config';
-import { SlideGenError, generateImage } from '@/lib/slides/providers';
+import { SlideGenError, falAvgCost, generateImage } from '@/lib/slides/providers';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -75,13 +77,15 @@ export async function POST(req: Request) {
     });
 
     const jpeg = await sharp(out.data).jpeg({ quality: 92, mozjpeg: true }).toBuffer();
-    const costUsd = estimateCost(model, out.usage);
+    const isFal = model.provider === 'fal';
+    const costUsd = isFal ? await falAvgCost(model.id) : estimateCost(model, out.usage);
 
     return NextResponse.json({
       image: `data:image/jpeg;base64,${jpeg.toString('base64')}`,
       ms: Date.now() - t0,
       usage: out.usage,
       costUsd,
+      costKind: isFal ? 'avg' : 'tokens',
       model: model.id,
     });
   } catch (err) {

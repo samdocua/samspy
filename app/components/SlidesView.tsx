@@ -10,9 +10,21 @@
 //                         live text preview, JPEG download, settings export/import.
 //   v0.2.0 (2026-11-18) — GPT Image models via fal: quality picker for them;
 //                         status line shows cost/tokens only when known.
+//   v0.3.0 (2026-11-18) — fal: shows ≈ average price per call (costKind 'avg').
+//   v0.4.0 (2026-11-18) — loads TikTok Sans (500/700) for the text overlay.
+//   v0.4.1 (2026-11-18) — TikTok Sans 600 too; preview on the reference is no
+//                         longer faded (it washed the text out) — badge instead.
+//   v0.5.0 (2026-11-18) — fonts for Instagram A/B styles (Instrument Sans,
+//                         Gabarito, Montserrat).
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import '@fontsource/tiktok-sans/500.css';
+import '@fontsource/tiktok-sans/600.css';
+import '@fontsource/tiktok-sans/700.css';
+import '@fontsource/instrument-sans/600.css';
+import '@fontsource/gabarito/600.css';
+import '@fontsource/montserrat/700.css';
 import {
   ASPECT_RATIOS,
   DEFAULT_SETTINGS,
@@ -33,6 +45,7 @@ const STORAGE_KEY = 'samspy.slides.settings.v1';
 interface SlideMeta {
   ms: number;
   costUsd: number | null;
+  costKind: 'tokens' | 'avg';
   usage: { textIn: number; imageIn: number; imageOut: number };
   model: string;
 }
@@ -223,7 +236,13 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
       patch(id, {
         busy: false,
         result: data.image,
-        meta: { ms: data.ms, costUsd: data.costUsd, usage: data.usage, model: data.model },
+        meta: {
+          ms: data.ms,
+          costUsd: data.costUsd,
+          costKind: data.costKind === 'avg' ? 'avg' : 'tokens',
+          usage: data.usage,
+          model: data.model,
+        },
       });
     } catch (e) {
       patch(id, { busy: false, error: (e as Error).message });
@@ -370,10 +389,14 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
               style={{ aspectRatio: `${exp.w} / ${exp.h}` }}
             >
               {previewSrc ? (
-                <canvas
-                  ref={previewRef}
-                  className={`h-full w-full object-contain ${active?.result ? '' : 'opacity-60'}`}
-                />
+                <>
+                  <canvas ref={previewRef} className="h-full w-full object-contain" />
+                  {!active?.result && (
+                    <span className="absolute left-2 top-2 rounded bg-gray-900/70 px-2 py-0.5 text-[11px] text-white">
+                      пример — ещё не сгенерировано
+                    </span>
+                  )}
+                </>
               ) : (
                 <div className="px-8 text-center">
                   <p className="font-medium">Здесь появится слайд.</p>
@@ -603,7 +626,9 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
               ) : active?.meta ? (
                 <>
                   Готово за {(active.meta.ms / 1000).toFixed(0)} с
-                  {active.meta.costUsd != null ? (
+                  {active.meta.costUsd != null && active.meta.costKind === 'avg' ? (
+                    <> · ≈ ${active.meta.costUsd.toFixed(3)} (средняя цена вызова fal)</>
+                  ) : active.meta.costUsd != null ? (
                     <>
                       {' '}
                       · ${active.meta.costUsd.toFixed(3)} (
