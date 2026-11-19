@@ -7,6 +7,11 @@
 //   v0.1.0 (2026-11-17) — Loop active competitors -> syncCompetitor().
 //   v0.1.1 (2026-11-17) — Also refresh the Top Reels digest once per run
 //                         ($0.25/day). Skip it with ?skipTop=1.
+//   v0.2.0 (2026-11-19) — Top is NO LONGER refreshed by cron. The 48h digest
+//                         costs $0.25/platform/call; it now updates only on the
+//                         manual "Обновить" button (POST /api/top) to avoid the
+//                         daily spend. Cron keeps syncing competitors (free) and
+//                         saved searches.
 //
 // Auth: requires `?secret=SAMSPY_SECRET` or an `Authorization: Bearer` header.
 // Vercel Cron sends the Authorization header automatically when configured
@@ -15,7 +20,6 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase';
 import { syncCompetitor, type SyncResult } from '@/lib/sync';
-import { refreshTopReels } from '@/lib/top';
 import { refreshSavedSearch } from '@/lib/search';
 import type { Competitor, SavedSearch } from '@/lib/types/db';
 
@@ -76,21 +80,10 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
 
-  // Refresh the Top digest for BOTH platforms ($0.25 each). ?skipTop=1 skips.
-  let top = 0;
-  if (url.searchParams.get('skipTop') !== '1') {
-    for (const platform of ['instagram', 'tiktok'] as const) {
-      try {
-        await refreshTopReels(supabase, platform, 60);
-        top++;
-      } catch (err) {
-        errors.push({
-          username: `(top: ${platform})`,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-  }
+  // NOTE: Top Reels is intentionally NOT refreshed here — the 48h digest is a
+  // paid Virlo call ($0.25/platform) and now updates only via the manual
+  // "Обновить" button on the Top tab (POST /api/top). This keeps the daily
+  // cron free of the top-digest spend.
 
   // Refresh each saved-search block on its own platform (~$0.10 each).
   // ?skipSearch=1 skips.
@@ -118,7 +111,6 @@ export async function GET(req: Request) {
     competitorsFound: competitors.length,
     synced: results.length,
     reels: results.reduce((n, r) => n + r.reelsUpserted, 0),
-    top,
     searches,
     results,
     errors,
