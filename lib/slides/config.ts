@@ -18,6 +18,8 @@
 //   v0.4.2 (2026-11-18) — thin copy removed (regular Classic won); default text
 //                         style TikTok Classic, size 4%.
 //   v0.5.0 (2026-11-18) — Instagram A/B styles: IG Classic, IG Modern, Montserrat.
+//   v0.6.0 (2026-11-19) — IG Literature, IG Strong, Reels captions styles;
+//                         textRotate (°) and subtitleSize (% of title) settings.
 
 export type Provider = 'gemini' | 'fal';
 
@@ -120,7 +122,10 @@ export type TextStyleId =
   | 'classic'
   | 'igClassic'
   | 'igModern'
-  | 'montserrat';
+  | 'montserrat'
+  | 'igLiterature'
+  | 'igStrong'
+  | 'reelsBold';
 export const TEXT_STYLES: { id: TextStyleId; label: string }[] = [
   { id: 'tiktok1', label: 'TikTok 1 — обводка' },
   { id: 'tiktok2', label: 'TikTok 2 — белая плашка' },
@@ -129,6 +134,9 @@ export const TEXT_STYLES: { id: TextStyleId; label: string }[] = [
   { id: 'igClassic', label: 'Instagram Classic (Instrument Sans)' },
   { id: 'igModern', label: 'Instagram Modern (Gabarito)' },
   { id: 'montserrat', label: 'Montserrat (карусели в Canva)' },
+  { id: 'igLiterature', label: 'Instagram Literature (с засечками)' },
+  { id: 'igStrong', label: 'Instagram Strong (капс на плашке)' },
+  { id: 'reelsBold', label: 'Субтитры Reels (жирный + свечение)' },
 ];
 
 // --- settings ----------------------------------------------------------------
@@ -143,6 +151,8 @@ export interface SlidesSettings {
   textStyle: TextStyleId;
   textOffset: number; // vertical shift, % of slide height (+ = down)
   textMaxWidth: number; // wrap width, % of slide width
+  textRotate: number; // block rotation, degrees (+ = clockwise)
+  subtitleSize: number; // text after a blank line, % of the title size
 }
 
 // v0.3.0: keep landmarks/architecture intact, change the camera only slightly —
@@ -165,6 +175,8 @@ export const DEFAULT_SETTINGS: SlidesSettings = {
   textStyle: 'classic',
   textOffset: -43,
   textMaxWidth: 72,
+  textRotate: 0,
+  subtitleSize: 60,
 };
 
 function pick<T extends string>(v: unknown, allowed: readonly T[], d: T): T {
@@ -191,5 +203,7 @@ export function sanitizeSettings(raw: unknown): SlidesSettings {
     textStyle: pick(r.textStyle, TEXT_STYLES.map((s) => s.id), d.textStyle),
     textOffset: num(r.textOffset, -50, 50, d.textOffset),
     textMaxWidth: num(r.textMaxWidth, 20, 100, d.textMaxWidth),
+    textRotate: num(r.textRotate, -45, 45, d.textRotate),
+    subtitleSize: num(r.subtitleSize, 30, 100, d.subtitleSize),
   };
 }

@@ -4,6 +4,10 @@
 // text on top. Each text style is a row in STYLE_SPECS (font, weight, effect).
 // The same code renders the live preview and the downloaded JPEG.
 //
+// Text layout: the part before the first blank line is the title; everything
+// after it is a subtitle drawn at `subtitlePct` % of the title size. The whole
+// block can be rotated by `rotateDeg` around its centre.
+//
 // Version history:
 //   v0.1.0 (2026-11-18) — cover-fit, word wrap, 3 TikTok styles (outline,
 //                         white plates, black plates), source downscaling.
@@ -16,16 +20,24 @@
 //   v0.3.0 (2026-11-18) — style spec table; Instagram A/B styles: IG Classic
 //                         (Instrument Sans), IG Modern (Gabarito), Montserrat —
 //                         white text with a soft drop shadow, no outline.
+//   v0.4.0 (2026-11-19) — IG Literature (Cormorant serif), IG Strong (Oswald caps
+//                         on a white plate), Reels captions (bold + glow);
+//                         subtitle after a blank line (smaller); block rotation.
+//   v0.4.1 (2026-11-19) — stripJpegMetadata(): canvasToBlob output has every APPn
+//                         (EXIF/XMP/IPTC/ICC) and COM segment removed, only JFIF kept.
+//   v0.4.2 (2026-11-19) — JFIF (APP0) removed too: the file has no metadata at all.
 
 import type { TextPosition, TextStyleId } from './config';
 
 export interface TextOptions {
   text: string;
-  sizePct: number; // font size, % of width
+  sizePct: number; // title font size, % of width
   position: TextPosition;
   style: TextStyleId;
   offsetPct: number; // % of height, + = down
   maxWidthPct: number; // wrap width, % of width
+  subtitlePct: number; // subtitle size, % of the title size (100 = same)
+  rotateDeg: number; // block rotation, degrees (+ = clockwise)
 }
 
 type Effect = 'outline' | 'shadow' | 'plateWhite' | 'plateBlack';
@@ -37,6 +49,10 @@ interface StyleSpec {
   tracking: number; // letter spacing, × font size
   effect: Effect;
   outline?: number; // outline width, × font size (effect 'outline')
+  glow?: number; // shadow strength multiplier (effect 'shadow'), default 1
+  uppercase?: boolean;
+  platePad?: number; // plate side padding, × font size (plate effects)
+  plateRadius?: number; // plate corner radius, × font size (plate effects)
 }
 
 const FALLBACK = '"Helvetica Neue", Helvetica, Arial, sans-serif';
@@ -49,6 +65,12 @@ const STYLE_SPECS: Record<TextStyleId, StyleSpec> = {
   igClassic: { family: 'Instrument Sans', weight: 600, lineHeight: 1.2, tracking: -0.01, effect: 'shadow' },
   igModern: { family: 'Gabarito', weight: 600, lineHeight: 1.15, tracking: 0, effect: 'shadow' },
   montserrat: { family: 'Montserrat', weight: 700, lineHeight: 1.2, tracking: -0.01, effect: 'shadow' },
+  igLiterature: { family: 'Cormorant', weight: 700, lineHeight: 1.08, tracking: 0, effect: 'shadow', glow: 0.8 },
+  igStrong: {
+    family: 'Oswald', weight: 600, lineHeight: 1.25, tracking: 0, effect: 'plateWhite',
+    uppercase: true, platePad: 0.3, plateRadius: 0.16,
+  },
+  reelsBold: { family: 'Instrument Sans', weight: 700, lineHeight: 1.15, tracking: -0.01, effect: 'shadow', glow: 1.6 },
 };
 
 // Canvas won't wait for web fonts — load every family/weight we draw with first.
@@ -163,67 +185,106 @@ function addRoundRect(
   ctx.closePath();
 }
 
+interface LaidLine {
+  text: string;
+  fs: number; // font size of this line
+  top: number; // offset from the block top
+  lh: number; // line height
+}
+
 export function drawText(ctx: CanvasRenderingContext2D, w: number, h: number, o: TextOptions) {
   if (!o.text.trim()) return; // empty = no text
 
   const spec = STYLE_SPECS[o.style] ?? STYLE_SPECS.classic;
-  const fs = Math.max(8, (w * o.sizePct) / 100);
-  ctx.font = `${spec.weight} ${fs}px "${spec.family}", ${FALLBACK}`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  // Letter spacing (canvas letterSpacing: Chrome 99+, Safari 17+).
-  const lsCtx = ctx as CanvasRenderingContext2D & { letterSpacing?: string };
-  if ('letterSpacing' in lsCtx) lsCtx.letterSpacing = `${spec.tracking * fs}px`;
+  const titleFs = Math.max(8, (w * o.sizePct) / 100);
+  const subFs = Math.max(8, (titleFs * (o.subtitlePct || 100)) / 100);
+  const maxW = (w * o.maxWidthPct) / 100;
 
-  const lines = wrapText(ctx, o.text, (w * o.maxWidthPct) / 100);
+  const setFont = (fs: number) => {
+    ctx.font = `${spec.weight} ${fs}px "${spec.family}", ${FALLBACK}`;
+    // Letter spacing (canvas letterSpacing: Chrome 99+, Safari 17+).
+    const lsCtx = ctx as CanvasRenderingContext2D & { letterSpacing?: string };
+    if ('letterSpacing' in lsCtx) lsCtx.letterSpacing = `${spec.tracking * fs}px`;
+  };
+
+  // Title = before the first blank line, subtitle = the rest.
+  const text = spec.uppercase ? o.text.toUpperCase() : o.text;
+  const [titlePart, ...rest] = text.split(/\n\s*\n/);
+  const subPart = rest.join('\n');
+
+  const lines: LaidLine[] = [];
+  let y = 0;
+  const lay = (part: string, fs: number) => {
+    setFont(fs);
+    for (const t of wrapText(ctx, part, maxW)) {
+      const lh = fs * spec.lineHeight;
+      lines.push({ text: t, fs, top: y, lh });
+      y += lh;
+    }
+  };
+  lay(titlePart, titleFs);
+  if (lines.length && subPart.trim()) y += titleFs * 0.15; // small gap before the subtitle
+  lay(subPart, subFs);
   if (!lines.length) return;
 
-  const lh = fs * spec.lineHeight;
-  const blockH = lines.length * lh;
+  const blockH = y;
   let top =
     o.position === 'top' ? h * 0.1 : o.position === 'bottom' ? h * 0.9 - blockH : (h - blockH) / 2;
   top += (h * o.offsetPct) / 100;
   const cx = w / 2;
-  const lineY = (i: number) => top + i * lh + lh / 2;
+  const midY = (l: LaidLine) => top + l.top + l.lh / 2;
+
+  ctx.save();
+  if (o.rotateDeg) {
+    const cy = top + blockH / 2;
+    ctx.translate(cx, cy);
+    ctx.rotate((o.rotateDeg * Math.PI) / 180);
+    ctx.translate(-cx, -cy);
+  }
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
 
   if (spec.effect === 'outline') {
     // White text, crisp dark outline (TikTok).
     ctx.lineJoin = 'round';
-    ctx.lineWidth = Math.max(2, fs * (spec.outline ?? 0.1));
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
     ctx.fillStyle = '#ffffff';
-    lines.forEach((l, i) => {
-      ctx.strokeText(l, cx, lineY(i));
-      ctx.fillText(l, cx, lineY(i));
-    });
-    return;
-  }
-
-  if (spec.effect === 'shadow') {
-    // White text, soft drop shadow, no outline (Instagram Stories look).
-    ctx.save();
+    for (const l of lines) {
+      setFont(l.fs);
+      ctx.lineWidth = Math.max(2, l.fs * (spec.outline ?? 0.1));
+      ctx.strokeText(l.text, cx, midY(l));
+      ctx.fillText(l.text, cx, midY(l));
+    }
+  } else if (spec.effect === 'shadow') {
+    // White text, soft drop shadow / glow, no outline (Instagram look).
+    const k = spec.glow ?? 1;
     ctx.fillStyle = '#ffffff';
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
-    ctx.shadowBlur = fs * 0.18;
-    ctx.shadowOffsetY = fs * 0.04;
-    lines.forEach((l, i) => ctx.fillText(l, cx, lineY(i)));
-    ctx.restore();
-    return;
+    ctx.shadowColor = `rgba(0, 0, 0, ${Math.min(0.85, 0.55 * k)})`;
+    for (const l of lines) {
+      setFont(l.fs);
+      ctx.shadowBlur = l.fs * 0.18 * k;
+      ctx.shadowOffsetY = l.fs * 0.04;
+      ctx.fillText(l.text, cx, midY(l));
+    }
+  } else {
+    // Per-line plates, filled as one path so overlaps don't leave seams.
+    const white = spec.effect === 'plateWhite';
+    ctx.beginPath();
+    for (const l of lines) {
+      setFont(l.fs);
+      const tw = ctx.measureText(l.text).width;
+      const padX = l.fs * (spec.platePad ?? 0.35);
+      addRoundRect(ctx, cx - tw / 2 - padX, top + l.top, tw + padX * 2, l.lh + 1, l.fs * (spec.plateRadius ?? 0.24));
+    }
+    ctx.fillStyle = white ? '#ffffff' : 'rgba(0, 0, 0, 0.8)';
+    ctx.fill('nonzero');
+    ctx.fillStyle = white ? '#000000' : '#ffffff';
+    for (const l of lines) {
+      setFont(l.fs);
+      ctx.fillText(l.text, cx, midY(l));
+    }
   }
-
-  // Per-line plates, filled as one path so overlaps don't leave seams.
-  const white = spec.effect === 'plateWhite';
-  const padX = fs * 0.35;
-  const radius = fs * 0.24;
-  ctx.beginPath();
-  lines.forEach((l, i) => {
-    const tw = ctx.measureText(l).width;
-    addRoundRect(ctx, cx - tw / 2 - padX, top + i * lh, tw + padX * 2, lh + 1, radius);
-  });
-  ctx.fillStyle = white ? '#ffffff' : 'rgba(0, 0, 0, 0.8)';
-  ctx.fill('nonzero');
-  ctx.fillStyle = white ? '#000000' : '#ffffff';
-  lines.forEach((l, i) => ctx.fillText(l, cx, lineY(i)));
+  ctx.restore();
 }
 
 /** Render photo + text into `canvas` at w×h. */
@@ -244,12 +305,39 @@ export async function renderSlide(
   if (text) drawText(ctx, w, h, text);
 }
 
+/**
+ * Removes all metadata from a JPEG: every APP0–APP15 segment (JFIF, EXIF, XMP,
+ * ICC, Photoshop/IPTC…) and COM comments. Only the image data stays — JFIF is
+ * optional, decoders read the file fine without it.
+ * Browsers (Safari/WebKit) add a small EXIF block (ColorSpace, pixel size) on export.
+ */
+export async function stripJpegMetadata(blob: Blob): Promise<Blob> {
+  const src = new Uint8Array(await blob.arrayBuffer());
+  if (src[0] !== 0xff || src[1] !== 0xd8) return blob; // not a JPEG — leave as is
+  const parts: Uint8Array[] = [src.subarray(0, 2)]; // SOI
+  let i = 2;
+  while (i + 4 <= src.length) {
+    if (src[i] !== 0xff) return blob; // unexpected layout — don't risk breaking the file
+    const marker = src[i + 1];
+    if (marker === 0xda) {
+      parts.push(src.subarray(i)); // SOS: compressed data until EOI, copy as is
+      break;
+    }
+    const len = (src[i + 2] << 8) | src[i + 3];
+    const seg = src.subarray(i, i + 2 + len);
+    const isApp = marker >= 0xe0 && marker <= 0xef;
+    if (!isApp && marker !== 0xfe) parts.push(seg);
+    i += 2 + len;
+  }
+  return new Blob(parts as BlobPart[], { type: 'image/jpeg' });
+}
+
 export function canvasToBlob(canvas: HTMLCanvasElement, quality = 0.92): Promise<Blob> {
-  return new Promise((resolve, reject) =>
+  return new Promise<Blob>((resolve, reject) =>
     canvas.toBlob(
       (b) => (b ? resolve(b) : reject(new Error('Не удалось сохранить JPEG.'))),
       'image/jpeg',
       quality
     )
-  );
+  ).then(stripJpegMetadata);
 }

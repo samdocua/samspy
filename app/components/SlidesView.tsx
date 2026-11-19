@@ -16,6 +16,8 @@
 //                         longer faded (it washed the text out) — badge instead.
 //   v0.5.0 (2026-11-18) — fonts for Instagram A/B styles (Instrument Sans,
 //                         Gabarito, Montserrat).
+//   v0.6.0 (2026-11-19) — fonts Cormorant / Oswald / Instrument Sans 700;
+//                         «Наклон, °» and «Подзаголовок, %» fields.
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -23,6 +25,9 @@ import '@fontsource/tiktok-sans/500.css';
 import '@fontsource/tiktok-sans/600.css';
 import '@fontsource/tiktok-sans/700.css';
 import '@fontsource/instrument-sans/600.css';
+import '@fontsource/instrument-sans/700.css';
+import '@fontsource/cormorant/700.css';
+import '@fontsource/oswald/600.css';
 import '@fontsource/gabarito/600.css';
 import '@fontsource/montserrat/700.css';
 import {
@@ -82,6 +87,8 @@ function textOptions(s: SlidesSettings, text: string): TextOptions {
     style: s.textStyle,
     offsetPct: s.textOffset,
     maxWidthPct: s.textMaxWidth,
+    subtitlePct: s.subtitleSize,
+    rotateDeg: s.textRotate,
   };
 }
 
@@ -652,7 +659,7 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
                 value={active?.text ?? ''}
                 onChange={(e) => active && patch(active.id, { text: e.target.value })}
                 rows={3}
-                placeholder="Enter = новая строка. Пусто = без плашек."
+                placeholder="Enter = новая строка. Пустая строка → дальше подзаголовок (мельче). Пусто = без текста."
                 className={`${inputCls} resize-y`}
               />
             </Field>
@@ -719,6 +726,28 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
                   step={1}
                   value={settings.textMaxWidth}
                   onChange={(e) => set('textMaxWidth', Number(e.target.value))}
+                  className={inputCls}
+                />
+              </Field>
+              <Field label="Наклон, °">
+                <input
+                  type="number"
+                  min={-45}
+                  max={45}
+                  step={1}
+                  value={settings.textRotate}
+                  onChange={(e) => set('textRotate', Number(e.target.value))}
+                  className={inputCls}
+                />
+              </Field>
+              <Field label="Подзаголовок, %">
+                <input
+                  type="number"
+                  min={30}
+                  max={100}
+                  step={5}
+                  value={settings.subtitleSize}
+                  onChange={(e) => set('subtitleSize', Number(e.target.value))}
                   className={inputCls}
                 />
               </Field>
