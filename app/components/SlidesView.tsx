@@ -22,6 +22,10 @@
 //                         slide strip): 1 file → current slide; several → current
 //                         slide if empty, rest → new slides; natural name order;
 //                         max 20 per batch; non-images skipped with a notice.
+//   v0.8.0 (2026-11-19) — «Сгенерировать все» runs 3 slides in parallel with auto-retry
+//                         (429/5xx/network, up to 2 retries); errors panel with
+//                         per-slide «Повторить» + «Повторить все с ошибкой»;
+//                         one text field per slide (count follows the slides).
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -52,6 +56,10 @@ import { canvasToBlob, compressImage, renderSlide, type TextOptions } from '@/li
 const STORAGE_KEY = 'samspy.slides.settings.v1';
 const MAX_FILES = 20; // per upload batch
 const COMPRESS_CONCURRENCY = 3;
+const GEN_CONCURRENCY = 3; // slides generated at once by «Сгенерировать все»
+const GEN_RETRIES = 2; // extra attempts on rate limit / server / network errors
+const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Natural file-name order: 2.jpg before 10.jpg. */
 const byName = (a: File, b: File) =>
@@ -269,17 +277,34 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
   }, [handleFiles, visible]);
 
   // --- generation ----------------------------------------------------------------
-  async function generate(id: string) {
+  /** Generates one slide. Retries rate-limit / server / network errors. Returns true on success. */
+  async function generate(id: string): Promise<boolean> {
     const slide = slidesRef.current.find((s) => s.id === id);
-    if (!slide?.source) return;
-    const s = settingsRef.current;
+    if (!slide?.source) return false;
     patch(id, { busy: true, error: null });
+    let lastErr = 'Неизвестная ошибка.';
+    for (let attempt = 0; attempt <= GEN_RETRIES; attempt++) {
+      if (attempt > 0) await sleep(2000 * attempt); // 2 s, then 4 s
+      const r = await generateOnce(id, slide.source);
+      if (r.ok) return true;
+      lastErr = attempt > 0 ? `${r.error} (попыток: ${attempt + 1})` : r.error;
+      if (!r.retry) break;
+    }
+    patch(id, { busy: false, error: lastErr });
+    return false;
+  }
+
+  async function generateOnce(
+    id: string,
+    source: string
+  ): Promise<{ ok: true } | { ok: false; error: string; retry: boolean }> {
+    const s = settingsRef.current;
     try {
       const res = await fetch('/api/slides/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          image: slide.source,
+          image: source,
           prompt: s.prompt,
           modelId: s.modelId,
           aspect: s.aspect,
@@ -294,8 +319,10 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
             ? 'Картинка слишком большая для запроса.'
             : res.status === 504
               ? 'Генерация не уложилась по времени, попробуй ещё раз.'
-              : `Ошибка HTTP ${res.status}.`;
-        throw new Error(data?.error ?? fallback);
+              : res.status === 429
+                ? 'Слишком много запросов к API (лимит).'
+                : `Ошибка HTTP ${res.status}.`;
+        return { ok: false, error: data?.error ?? fallback, retry: RETRYABLE.has(res.status) };
       }
       patch(id, {
         busy: false,
@@ -308,21 +335,41 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
           model: data.model,
         },
       });
+      return { ok: true };
     } catch (e) {
-      patch(id, { busy: false, error: (e as Error).message });
+      // fetch itself failed — network hiccup, worth a retry
+      return { ok: false, error: `Сеть: ${(e as Error).message}`, retry: true };
     }
   }
 
-  async function generateAll() {
+  /** Runs generate() for the given slides, GEN_CONCURRENCY at a time. */
+  async function generateMany(ids: string[]) {
+    if (!ids.length) return;
     setBatch(true);
-    try {
-      for (const s of slidesRef.current) {
-        if (s.source && !s.busy) await generate(s.id);
+    let next = 0;
+    let failed = 0;
+    const worker = async () => {
+      while (next < ids.length) {
+        const id = ids[next++];
+        if (!(await generate(id))) failed++;
       }
+    };
+    try {
+      await Promise.all(Array.from({ length: Math.min(GEN_CONCURRENCY, ids.length) }, worker));
     } finally {
       setBatch(false);
     }
+    flash(
+      failed
+        ? `Готово ${ids.length - failed} из ${ids.length} · ошибок: ${failed} — см. блок «Ошибки»`
+        : `Готово: ${ids.length} из ${ids.length}`
+    );
   }
+
+  const generateAll = () =>
+    generateMany(slidesRef.current.filter((s) => s.source && !s.busy).map((s) => s.id));
+  const retryFailed = () =>
+    generateMany(slidesRef.current.filter((s) => s.source && s.error && !s.busy).map((s) => s.id));
 
   // --- live preview ---------------------------------------------------------------
   const previewSrc = active?.result ?? active?.source ?? null;
@@ -409,6 +456,9 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
   const readyCount = slides.filter((s) => s.result).length;
   const sourceCount = slides.filter((s) => s.source).length;
   const anyBusy = slides.some((s) => s.busy);
+  const failedSlides = slides
+    .map((s, i) => ({ s, i }))
+    .filter(({ s }) => s.error && !s.busy);
 
   return (
     <div>
@@ -697,8 +747,52 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
                 disabled={batch || anyBusy}
                 className="w-full rounded-lg border border-edge bg-white py-2 text-sm font-medium disabled:opacity-40"
               >
-                {batch ? 'Генерирую все…' : `Сгенерировать все (${sourceCount})`}
+                {batch
+                  ? `Генерирую… ${slides.filter((s) => s.busy).length} в работе`
+                  : `Сгенерировать все (${sourceCount}) · по ${GEN_CONCURRENCY} сразу`}
               </button>
+            )}
+
+            {/* errors panel */}
+            {failedSlides.length > 0 && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="font-semibold text-red-700">
+                    Ошибки ({failedSlides.length})
+                  </span>
+                  {failedSlides.some(({ s }) => s.source) && (
+                    <button
+                      onClick={() => void retryFailed()}
+                      disabled={batch}
+                      className="rounded border border-red-300 bg-white px-2 py-0.5 text-red-700 disabled:opacity-40"
+                    >
+                      Повторить все с ошибкой
+                    </button>
+                  )}
+                </div>
+                <ul className="space-y-1.5">
+                  {failedSlides.map(({ s, i }) => (
+                    <li key={s.id} className="flex items-start gap-2">
+                      <button
+                        onClick={() => setActiveId(s.id)}
+                        className="shrink-0 font-semibold text-red-700 hover:underline"
+                      >
+                        Слайд {pad2(i + 1)}
+                      </button>
+                      <span className="flex-1 break-words text-red-700">{s.error}</span>
+                      {s.source && (
+                        <button
+                          onClick={() => void generate(s.id)}
+                          disabled={batch}
+                          className="shrink-0 text-red-700 underline disabled:opacity-40"
+                        >
+                          Повторить
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
 
             <p className="text-xs text-muted">
@@ -728,15 +822,45 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
 
           {/* text overlay */}
           <div className="space-y-3 border-t border-edge pt-5">
-            <Field label="Текст слайда">
-              <textarea
-                value={active?.text ?? ''}
-                onChange={(e) => active && patch(active.id, { text: e.target.value })}
-                rows={3}
-                placeholder="Enter = новая строка. Пустая строка → дальше подзаголовок (мельче). Пусто = без текста."
-                className={`${inputCls} resize-y`}
-              />
-            </Field>
+            <div>
+              <span className={labelCls}>
+                Тексты слайдов ({slides.length}) — Enter = новая строка, пустая строка →
+                подзаголовок, пусто = без текста
+              </span>
+              <div className="space-y-2">
+                {slides.map((s, i) => {
+                  const thumb = s.result ?? s.source;
+                  const isActive = s.id === activeId;
+                  return (
+                    <div key={s.id} className="flex items-start gap-2">
+                      <button
+                        onClick={() => setActiveId(s.id)}
+                        title={`Слайд ${pad2(i + 1)}`}
+                        className={`relative h-14 w-11 shrink-0 overflow-hidden rounded border-2 bg-gray-50 ${
+                          isActive ? 'border-accent' : 'border-edge'
+                        }`}
+                      >
+                        {thumb && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={thumb} alt="" className="h-full w-full object-cover" />
+                        )}
+                        <span className="absolute left-0.5 top-0.5 rounded bg-gray-900/80 px-0.5 text-[9px] font-semibold text-white">
+                          {pad2(i + 1)}
+                        </span>
+                      </button>
+                      <textarea
+                        value={s.text}
+                        onFocus={() => setActiveId(s.id)}
+                        onChange={(e) => patch(s.id, { text: e.target.value })}
+                        rows={2}
+                        placeholder={`Текст слайда ${pad2(i + 1)}`}
+                        className={`${inputCls} resize-y ${isActive ? 'border-accent' : ''}`}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
 
             <div className="grid grid-cols-3 gap-2">
               <Field label="Размер, %">
