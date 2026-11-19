@@ -18,6 +18,10 @@
 //                         Gabarito, Montserrat).
 //   v0.6.0 (2026-11-19) — fonts Cormorant / Oswald / Instrument Sans 700;
 //                         «Наклон, °» and «Подзаголовок, %» fields.
+//   v0.7.0 (2026-11-19) — multi-file upload (picker / drag / Cmd+V, also onto the
+//                         slide strip): 1 file → current slide; several → current
+//                         slide if empty, rest → new slides; natural name order;
+//                         max 20 per batch; non-images skipped with a notice.
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -46,6 +50,12 @@ import {
 import { canvasToBlob, compressImage, renderSlide, type TextOptions } from '@/lib/slides/render';
 
 const STORAGE_KEY = 'samspy.slides.settings.v1';
+const MAX_FILES = 20; // per upload batch
+const COMPRESS_CONCURRENCY = 3;
+
+/** Natural file-name order: 2.jpg before 10.jpg. */
+const byName = (a: File, b: File) =>
+  a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
 
 interface SlideMeta {
   ms: number;
@@ -124,6 +134,7 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
   const [slides, setSlides] = useState<Slide[]>([first]);
   const [activeId, setActiveId] = useState(first.id);
   const [dragOver, setDragOver] = useState(false);
+  const [stripDrag, setStripDrag] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [batch, setBatch] = useState(false);
 
@@ -176,40 +187,86 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
   const exp = EXPORT_SIZE[settings.aspect];
 
   // --- reference photo input ---------------------------------------------------
-  const handleFile = useCallback(
-    async (file: File | null | undefined) => {
-      if (!file) return;
-      const id = activeRef.current;
-      if (!file.type.startsWith('image/')) {
-        patch(id, { error: 'Это не картинка.' });
+  const flash = useCallback((msg: string) => {
+    setNotice(msg);
+    setTimeout(() => setNotice(null), 6000);
+  }, []);
+
+  /**
+   * One file → it becomes the current slide's reference (replaces an existing one).
+   * Several files → the first fills the current slide if it has no reference yet,
+   * every other file gets a new slide at the end. Files are taken in natural name order.
+   */
+  const handleFiles = useCallback(
+    async (list: FileList | File[] | null | undefined) => {
+      const all = Array.from(list ?? []);
+      if (!all.length) return;
+
+      const images = all.filter((f) => f.type.startsWith('image/')).sort(byName);
+      const skipped = all.length - images.length;
+      const over = Math.max(0, images.length - MAX_FILES);
+      const files = images.slice(0, MAX_FILES);
+      const notes: string[] = [];
+      if (skipped) notes.push(`пропущено не-картинок: ${skipped}`);
+      if (over) notes.push(`больше ${MAX_FILES} за раз — лишние ${over} не добавлены`);
+      if (!files.length) {
+        flash(all.length === 1 ? 'Это не картинка.' : 'Среди файлов нет картинок.');
         return;
       }
-      try {
-        const source = await compressImage(file);
-        patch(id, { source, result: null, meta: null, error: null });
-      } catch (e) {
-        patch(id, { error: (e as Error).message });
+
+      // Decide which slide each file goes to.
+      const activeId = activeRef.current;
+      const active = slidesRef.current.find((s) => s.id === activeId);
+      let targets: string[];
+      if (files.length === 1) {
+        targets = [activeId];
+      } else {
+        const useActive = !!active && !active.source;
+        const fresh = Array.from({ length: useActive ? files.length - 1 : files.length }, newSlide);
+        targets = [...(useActive ? [activeId] : []), ...fresh.map((s) => s.id)];
+        setSlides((cur) => [...cur, ...fresh]);
       }
+
+      // Downscale in parallel (a few at a time) and fill the slides.
+      let failed = 0;
+      let next = 0;
+      const worker = async () => {
+        while (next < files.length) {
+          const i = next++;
+          try {
+            const source = await compressImage(files[i]);
+            patch(targets[i], { source, result: null, meta: null, error: null });
+          } catch (e) {
+            failed++;
+            patch(targets[i], { error: (e as Error).message });
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: COMPRESS_CONCURRENCY }, worker));
+
+      if (files.length > 1) notes.unshift(`Добавлено слайдов: ${files.length - failed}`);
+      if (failed) notes.push(`не открылись: ${failed}`);
+      if (notes.length) flash(notes.join(' · '));
     },
-    [patch]
+    [patch, flash]
   );
 
   // Cmd+V anywhere on the tab — only when the clipboard holds an image.
   useEffect(() => {
     if (!visible) return;
     const onPaste = (e: ClipboardEvent) => {
-      const item = Array.from(e.clipboardData?.items ?? []).find((i) =>
-        i.type.startsWith('image/')
-      );
-      const file = item?.getAsFile();
-      if (file) {
+      const files = Array.from(e.clipboardData?.items ?? [])
+        .filter((i) => i.type.startsWith('image/'))
+        .map((i) => i.getAsFile())
+        .filter((f): f is File => !!f);
+      if (files.length) {
         e.preventDefault();
-        void handleFile(file);
+        void handleFiles(files);
       }
     };
     window.addEventListener('paste', onPaste);
     return () => window.removeEventListener('paste', onPaste);
-  }, [handleFile, visible]);
+  }, [handleFiles, visible]);
 
   // --- generation ----------------------------------------------------------------
   async function generate(id: string) {
@@ -438,8 +495,20 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
             </div>
           </div>
 
-          {/* slide strip */}
-          <div className="mt-6 border-t border-edge pt-4">
+          {/* slide strip — also a drop target for several files */}
+          <div
+            className={`mt-6 border-t pt-4 transition ${stripDrag ? 'border-accent bg-accent/5' : 'border-edge'}`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setStripDrag(true);
+            }}
+            onDragLeave={() => setStripDrag(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setStripDrag(false);
+              void handleFiles(e.dataTransfer.files);
+            }}
+          >
             <div className="flex flex-wrap gap-3">
               {slides.map((s, i) => {
                 const thumb = s.result ?? s.source;
@@ -491,7 +560,9 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
               </button>
             </div>
             <p className="mt-3 text-xs text-muted">
-              Картинки живут до перезагрузки страницы. Настройки сохраняются.
+              Можно перетащить сюда сразу несколько фото — каждое станет слайдом (порядок по
+              имени файла, до {MAX_FILES} за раз). Картинки живут до перезагрузки страницы.
+              Настройки сохраняются.
             </p>
           </div>
         </section>
@@ -511,7 +582,7 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
               onDrop={(e) => {
                 e.preventDefault();
                 setDragOver(false);
-                void handleFile(e.dataTransfer.files?.[0]);
+                void handleFiles(e.dataTransfer.files);
               }}
               className={`flex cursor-pointer items-center gap-3 rounded-lg border-2 border-dashed p-3 text-sm transition ${
                 dragOver ? 'border-accent bg-accent/5' : 'border-edge'
@@ -523,19 +594,22 @@ export default function SlidesView({ visible = true }: { visible?: boolean }) {
               ) : null}
               <div className="text-muted">
                 <p className="font-medium text-gray-900">
-                  {active?.source ? 'Заменить пример' : 'Перетащи картинку сюда'}
+                  {active?.source ? 'Заменить пример' : 'Перетащи картинки сюда'}
                 </p>
                 <p>или вставь из буфера (Cmd+V), или нажми, чтобы выбрать</p>
-                <p className="text-xs">JPEG, PNG, WebP</p>
+                <p className="text-xs">
+                  JPEG, PNG, WebP · несколько файлов → новые слайды (до {MAX_FILES})
+                </p>
               </div>
             </div>
             <input
               ref={fileRef}
               type="file"
               accept="image/jpeg,image/png,image/webp"
+              multiple
               className="hidden"
               onChange={(e) => {
-                void handleFile(e.target.files?.[0]);
+                void handleFiles(e.target.files);
                 e.target.value = '';
               }}
             />
