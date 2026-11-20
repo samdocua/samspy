@@ -24,6 +24,10 @@
 //   v0.3.0 (2026-11-20) — provider 'openai' actually calls OpenAI (OPENAI_CHECK_MODEL,
 //                         default gpt-5.4-mini) — before, the «GPT» second opinion went
 //                         to Claude again; skipped without OPENAI_API_KEY. GET = env status.
+//   v0.3.1 (2026-11-20) — busy photos (Times Square: dozens of garbled signs) cut the JSON
+//                         at max_tokens → «Не удалось разобрать ответ». Now: max 6 grouped
+//                         issues in the prompt, 1500 output tokens, and a truncated answer
+//                         is salvaged (complete issue objects are kept).
 
 import { NextResponse } from 'next/server';
 
@@ -50,6 +54,8 @@ Check the slide image and report problems:
 3. text — does the caption contain garbage: stray symbols, @handles, links, watermarks, leftover OCR noise, broken or misspelled words, wrong line breaks inside a phrase? Compare with the intended text.
 4. photo_artifact — AI-generation artifacts in the PHOTO itself: garbled or fake lettering on signs, distorted faces/hands/people, broken or impossible architecture, melted or duplicated objects, anything that makes it look fake rather than a real phone photo.
 
+List at most 6 issues, most noticeable first; group similar problems into one (e.g. «много вывесок с бессмысленным текстом»).
+
 Severity: "fail" only for serious problems (caption unreadable or cut off, obvious artifacts a viewer would notice). Minor things are "warn". Do not invent problems — if the slide is fine, return no issues.
 
 Answer with ONLY this JSON, no other text. Write every "message" in Russian, short (max 20 words), with a concrete hint when possible:
@@ -69,6 +75,8 @@ Check ${withReference ? 'Image 2 (the copy) ONLY' : 'the image'} for anything th
 Do NOT report the intended small differences: camera position, zoom, crop, light, and moving things (people, cars, water, clouds) may differ.`
     : ''
 }
+
+List at most 6 issues, most noticeable first; group similar problems into one (e.g. «много вывесок с бессмысленным текстом слева»).
 
 Severity: "fail" only for problems an ordinary viewer would notice on a phone screen and think «this is AI». Small things visible only when zoomed in are "warn". Do not invent problems — if the photo looks real, return no issues.
 
@@ -108,7 +116,7 @@ async function askClaude(parts: Part[]): Promise<string> {
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
-      max_tokens: 600,
+      max_tokens: 1500,
       messages: [
         {
           role: 'user',
@@ -136,7 +144,7 @@ async function askOpenAI(parts: Part[], key: string): Promise<string> {
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: OPENAI_MODEL,
-      max_completion_tokens: 2000,
+      max_completion_tokens: 3000,
       response_format: { type: 'json_object' },
       messages: [
         {
@@ -220,22 +228,55 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: err.message }, { status: err.status ?? 502 });
   }
   const model = provider === 'openai' ? OPENAI_MODEL : CLAUDE_MODEL;
-  const jsonText = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);
-
-  try {
-    const parsed = JSON.parse(jsonText) as {
-      issues?: { type?: string; severity?: string; message?: string }[];
-    };
-    const issues = (parsed.issues ?? [])
-      .filter((i) => i && typeof i.message === 'string' && i.message.trim())
-      .map((i) => ({
-        type: TYPES.has(String(i.type)) ? String(i.type) : 'other',
-        severity: i.severity === 'fail' ? 'fail' : 'warn',
-        message: String(i.message).trim(),
-      }));
-    const status = issues.some((i) => i.severity === 'fail') ? 'fail' : issues.length ? 'warn' : 'ok';
-    return NextResponse.json({ status, issues, model, provider });
-  } catch {
-    return NextResponse.json({ error: 'Не удалось разобрать ответ модели.' }, { status: 502 });
+  const issues = parseIssues(raw);
+  if (!issues) {
+    return NextResponse.json(
+      { error: `Не удалось разобрать ответ модели (${model}): ${raw.slice(0, 120) || 'пустой ответ'}` },
+      { status: 502 }
+    );
   }
+  const status = issues.some((i) => i.severity === 'fail') ? 'fail' : issues.length ? 'warn' : 'ok';
+  return NextResponse.json({ status, issues, model, provider });
+}
+
+type Issue = { type: string; severity: 'warn' | 'fail'; message: string };
+
+function clean(list: { type?: unknown; severity?: unknown; message?: unknown }[]): Issue[] {
+  return list
+    .filter((i) => i && typeof i.message === 'string' && i.message.trim())
+    .slice(0, 8)
+    .map((i) => ({
+      type: TYPES.has(String(i.type)) ? String(i.type) : 'other',
+      severity: i.severity === 'fail' ? 'fail' : 'warn',
+      message: String(i.message).trim(),
+    }));
+}
+
+/**
+ * Issues from the model's answer. Normal case: the JSON object. If the answer was cut off
+ * (output limit), every complete {"type","severity","message"} object found is kept.
+ * Returns null when nothing usable is there.
+ */
+function parseIssues(raw: string): Issue[] | null {
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try {
+      const parsed = JSON.parse(raw.slice(start, end + 1)) as { issues?: unknown };
+      if (Array.isArray(parsed.issues)) return clean(parsed.issues);
+    } catch {
+      /* fall through to salvage */
+    }
+  }
+  const found: { type?: unknown; severity?: unknown; message?: unknown }[] = [];
+  for (const m of raw.matchAll(/\{[^{}]*"message"\s*:\s*"(?:[^"\\]|\\.)*"[^{}]*\}/g)) {
+    try {
+      found.push(JSON.parse(m[0]));
+    } catch {
+      /* skip a broken object */
+    }
+  }
+  if (found.length) return clean(found);
+  if (/"issues"\s*:\s*\[\s*\]/.test(raw)) return [];
+  return null;
 }
