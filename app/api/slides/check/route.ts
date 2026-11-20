@@ -28,6 +28,8 @@
 //                         at max_tokens → «Не удалось разобрать ответ». Now: max 6 grouped
 //                         issues in the prompt, 1500 output tokens, and a truncated answer
 //                         is salvaged (complete issue objects are kept).
+//   v0.4.0 (2026-11-20) — slide mode checks the TEXT overlay only (photos are checked in
+//                         «Размножение»): no photo_artifact item in the slide prompt.
 
 import { NextResponse } from 'next/server';
 
@@ -41,7 +43,7 @@ const OPENAI_MODEL = process.env.OPENAI_CHECK_MODEL || 'gpt-5.4-mini';
 
 const DATA_URL_RE = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/;
 
-const PROMPT = (text: string) => `You are reviewing one slide of an Instagram/TikTok carousel: a photo with a caption overlaid on it.
+const PROMPT = (text: string) => `You are reviewing one slide of an Instagram/TikTok carousel: a photo with a caption overlaid on it. The photo itself was already checked — review ONLY the caption and how it sits on the photo.
 
 Intended caption text (exactly what the author typed):
 <<<
@@ -49,17 +51,17 @@ ${text || '(no caption)'}
 >>>
 
 Check the slide image and report problems:
-1. overflow / readability — is every word of the caption fully visible inside the frame and easy to read against the background?
+1. overflow / readability — is every word of the caption fully visible inside the frame and easy to read against the background (contrast, busy background behind the letters)?
 2. covers_subject — does the caption cover a face or the main subject of the photo?
 3. text — does the caption contain garbage: stray symbols, @handles, links, watermarks, leftover OCR noise, broken or misspelled words, wrong line breaks inside a phrase? Compare with the intended text.
-4. photo_artifact — AI-generation artifacts in the PHOTO itself: garbled or fake lettering on signs, distorted faces/hands/people, broken or impossible architecture, melted or duplicated objects, anything that makes it look fake rather than a real phone photo.
+Do NOT report anything about the photo itself (AI artifacts, signs, people, architecture).
 
-List at most 6 issues, most noticeable first; group similar problems into one (e.g. «много вывесок с бессмысленным текстом»).
+List at most 6 issues, most noticeable first; group similar problems into one.
 
-Severity: "fail" only for serious problems (caption unreadable or cut off, obvious artifacts a viewer would notice). Minor things are "warn". Do not invent problems — if the slide is fine, return no issues.
+Severity: "fail" only for serious problems (caption unreadable, cut off, or covering a face). Minor things are "warn". Do not invent problems — if the slide is fine, return no issues.
 
-Answer with ONLY this JSON, no other text. Write every "message" in Russian, short (max 20 words), with a concrete hint when possible:
-{"status":"ok"|"warn"|"fail","issues":[{"type":"overflow|readability|covers_subject|text|photo_artifact|other","severity":"warn|fail","message":"..."}]}`;
+Answer with ONLY this JSON, no other text. Write every "message" in Russian, short (max 20 words), with a concrete hint when possible (e.g. «сдвинь текст выше», «уменьши размер»):
+{"status":"ok"|"warn"|"fail","issues":[{"type":"overflow|readability|covers_subject|text|other","severity":"warn|fail","message":"..."}]}`;
 
 const PHOTO_PROMPT = (withReference: boolean) => `${
   withReference
