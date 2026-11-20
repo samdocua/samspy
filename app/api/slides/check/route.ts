@@ -1,10 +1,16 @@
 // SamSpy — Slides: AI check of a finished slide (photo + overlaid text)
-//   POST /api/slides/check   body: { image: dataURL (jpeg), text: string }
+//   POST /api/slides/check   body: { image: dataURL (jpeg), text: string, provider? }
 //     -> { status: 'ok'|'warn'|'fail', issues: [{type, severity, message}], model }
 //
-//   mode 'photo' («Размножение»): body { mode: 'photo', image, reference? }
+//   mode 'photo' («Размножение»): body { mode: 'photo', image, reference?, provider? }
 //     Only the photo is checked (no caption). With `reference` (the original photo)
-//     Claude also compares the copy with it: invented / removed / broken structures.
+//     the model also compares the copy with it: invented / removed / broken structures.
+//
+//   provider: 'claude' (default) | 'openai' — the OpenAI call is the «second opinion».
+//     Without OPENAI_API_KEY it answers { skipped: true, issues: [] }.
+//
+//   GET /api/slides/check -> { claude: bool, openai: bool, claudeModel, openaiModel }
+//     which keys are set (open it in the browser while logged in to verify env).
 //
 // Claude looks at the rendered slide and reports: unreadable / cut text, text over
 // faces or the main subject, garbage or typos in the text, AI artifacts in the photo
@@ -15,6 +21,9 @@
 //   v0.1.0 (2026-11-19) — initial check (Haiku by default, SLIDES_CHECK_MODEL override).
 //   v0.2.0 (2026-11-20) — mode 'photo' for «Размножение»: photo-only AI-artifact check,
 //                         optional reference photo for comparison (type 'scene_change').
+//   v0.3.0 (2026-11-20) — provider 'openai' actually calls OpenAI (OPENAI_CHECK_MODEL,
+//                         default gpt-5.4-mini) — before, the «GPT» second opinion went
+//                         to Claude again; skipped without OPENAI_API_KEY. GET = env status.
 
 import { NextResponse } from 'next/server';
 
@@ -22,8 +31,9 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-const MODEL =
+const CLAUDE_MODEL =
   process.env.SLIDES_CHECK_MODEL || process.env.CAROUSEL_OCR_MODEL || 'claude-haiku-5-5';
+const OPENAI_MODEL = process.env.OPENAI_CHECK_MODEL || 'gpt-5.4-mini';
 
 const DATA_URL_RE = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/;
 
@@ -75,16 +85,93 @@ const TYPES = new Set([
   'other',
 ]);
 
-type ImagePart = { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
-const imagePart = (m: RegExpExecArray): ImagePart => ({
-  type: 'image',
-  source: { type: 'base64', media_type: m[1], data: m[2] },
-});
+// Provider-neutral message: text parts and images (data URL match) in order.
+type Part = { kind: 'text'; text: string } | { kind: 'image'; m: RegExpExecArray };
+
+class CheckError extends Error {
+  status: number;
+  constructor(message: string, status = 502) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function askClaude(parts: Part[]): Promise<string> {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) throw new CheckError('ANTHROPIC_API_KEY не задан в env.', 500);
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: CLAUDE_MODEL,
+      max_tokens: 600,
+      messages: [
+        {
+          role: 'user',
+          content: parts.map((p) =>
+            p.kind === 'text'
+              ? { type: 'text', text: p.text }
+              : { type: 'image', source: { type: 'base64', media_type: p.m[1], data: p.m[2] } }
+          ),
+        },
+      ],
+    }),
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const detail = (await res.text()).slice(0, 200);
+    throw new CheckError(`Claude HTTP ${res.status}: ${detail}`, res.status === 429 ? 429 : 502);
+  }
+  const data = (await res.json()) as { content?: { type: string; text?: string }[] };
+  return (data.content ?? []).filter((c) => c.type === 'text').map((c) => c.text ?? '').join('\n');
+}
+
+async function askOpenAI(parts: Part[], key: string): Promise<string> {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      max_completion_tokens: 2000,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'user',
+          content: parts.map((p) =>
+            p.kind === 'text'
+              ? { type: 'text', text: p.text }
+              : { type: 'image_url', image_url: { url: p.m[0], detail: 'high' } }
+          ),
+        },
+      ],
+    }),
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const j: any = await res.json().catch(() => null);
+    const msg = j?.error?.message ?? res.statusText;
+    throw new CheckError(`OpenAI HTTP ${res.status}: ${String(msg).slice(0, 200)}`, res.status === 429 ? 429 : 502);
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const data: any = await res.json();
+  return String(data?.choices?.[0]?.message?.content ?? '');
+}
+
+export async function GET() {
+  return NextResponse.json({
+    claude: !!process.env.ANTHROPIC_API_KEY,
+    openai: !!process.env.OPENAI_API_KEY,
+    claudeModel: CLAUDE_MODEL,
+    openaiModel: OPENAI_MODEL,
+  });
+}
 
 export async function POST(req: Request) {
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) return NextResponse.json({ error: 'ANTHROPIC_API_KEY не задан в env.' }, { status: 500 });
-
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let body: any;
   try {
@@ -95,49 +182,44 @@ export async function POST(req: Request) {
   const m = typeof body?.image === 'string' ? DATA_URL_RE.exec(body.image) : null;
   if (!m) return NextResponse.json({ error: 'Нужна картинка слайда.' }, { status: 400 });
 
+  const provider: 'claude' | 'openai' = body?.provider === 'openai' ? 'openai' : 'claude';
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (provider === 'openai' && !openaiKey) {
+    return NextResponse.json({ skipped: true, reason: 'OPENAI_API_KEY не задан', issues: [] });
+  }
+
   // Build the message: slide mode (default) or photo-only mode.
-  let content: (ImagePart | { type: 'text'; text: string })[];
+  let parts: Part[];
   if (body?.mode === 'photo') {
     const ref = typeof body?.reference === 'string' ? DATA_URL_RE.exec(body.reference) : null;
-    content = ref
+    parts = ref
       ? [
-          { type: 'text', text: 'Image 1 — original:' },
-          imagePart(ref),
-          { type: 'text', text: 'Image 2 — AI copy to check:' },
-          imagePart(m),
-          { type: 'text', text: PHOTO_PROMPT(true) },
+          { kind: 'text', text: 'Image 1 — original:' },
+          { kind: 'image', m: ref },
+          { kind: 'text', text: 'Image 2 — AI copy to check:' },
+          { kind: 'image', m },
+          { kind: 'text', text: PHOTO_PROMPT(true) },
         ]
-      : [imagePart(m), { type: 'text', text: PHOTO_PROMPT(false) }];
+      : [
+          { kind: 'image', m },
+          { kind: 'text', text: PHOTO_PROMPT(false) },
+        ];
   } else {
     const text = typeof body?.text === 'string' ? body.text : '';
-    content = [imagePart(m), { type: 'text', text: PROMPT(text) }];
+    parts = [
+      { kind: 'image', m },
+      { kind: 'text', text: PROMPT(text) },
+    ];
   }
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 600,
-      messages: [{ role: 'user', content }],
-    }),
-    cache: 'no-store',
-  });
-
-  if (!res.ok) {
-    const detail = (await res.text()).slice(0, 200);
-    return NextResponse.json(
-      { error: `Claude HTTP ${res.status}: ${detail}` },
-      { status: res.status === 429 ? 429 : 502 }
-    );
+  let raw: string;
+  try {
+    raw = provider === 'openai' ? await askOpenAI(parts, openaiKey!) : await askClaude(parts);
+  } catch (e) {
+    const err = e as CheckError;
+    return NextResponse.json({ error: err.message }, { status: err.status ?? 502 });
   }
-
-  const data = (await res.json()) as { content?: { type: string; text?: string }[] };
-  const raw = (data.content ?? []).filter((c) => c.type === 'text').map((c) => c.text ?? '').join('\n');
+  const model = provider === 'openai' ? OPENAI_MODEL : CLAUDE_MODEL;
   const jsonText = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);
 
   try {
@@ -152,7 +234,7 @@ export async function POST(req: Request) {
         message: String(i.message).trim(),
       }));
     const status = issues.some((i) => i.severity === 'fail') ? 'fail' : issues.length ? 'warn' : 'ok';
-    return NextResponse.json({ status, issues, model: MODEL });
+    return NextResponse.json({ status, issues, model, provider });
   } catch {
     return NextResponse.json({ error: 'Не удалось разобрать ответ модели.' }, { status: 502 });
   }

@@ -19,6 +19,9 @@
 //                         original), never repeated automatically; versions with their
 //                         checks, best one becomes current; per-copy «Проверить» /
 //                         «Исправить» (also fixes «!»), «Проверить все».
+//   v0.3.0 (2026-11-20) — second opinion: a copy Claude found clean also goes to GPT
+//                         (provider 'openai'); its findings are prefixed «GPT:» and
+//                         count like Claude's (✕ → auto-fix). «Проверили: …» line.
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -335,33 +338,55 @@ export default function MultiplyView({ visible = true }: { visible?: boolean }) 
         reference = smallRefCache.current.small;
       }
       const image = await shrink(checkedImage);
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let data: any = null;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        if (attempt) await sleep(2500);
-        const res = await fetch('/api/slides/check', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: 'photo', image, reference }),
-        });
-        data = await res.json().catch(() => null);
-        if (res.ok) break;
-        data = { error: data?.error ?? `HTTP ${res.status}` };
-        if (!RETRYABLE.has(res.status)) break;
-      }
-      if (data?.issues) {
-        const issues: PhotoIssue[] = data.issues.map((i: PhotoIssue) => ({
+      const ask = async (provider: 'claude' | 'openai'): Promise<any> => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let data: any = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (attempt) await sleep(2500);
+          const res = await fetch('/api/slides/check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: 'photo', image, reference, provider }),
+          });
+          data = await res.json().catch(() => null);
+          if (res.ok) break;
+          data = { error: data?.error ?? `HTTP ${res.status}` };
+          if (!RETRYABLE.has(res.status)) break;
+        }
+        return data;
+      };
+      const norm = (list: PhotoIssue[], prefix = ''): PhotoIssue[] =>
+        list.map((i) => ({
           type: i.type === 'photo_artifact' || i.type === 'scene_change' ? i.type : 'other',
           severity: i.severity === 'fail' ? 'fail' : 'warn',
-          message: i.message,
+          message: prefix + i.message,
         }));
-        const status = issues.some((i) => i.severity === 'fail') ? 'fail' : issues.length ? 'warn' : 'ok';
-        check = { status, issues, error: null };
+
+      // 1) main check — Claude
+      const main = await ask('claude');
+      if (!main?.issues) {
+        check = { status: 'warn', issues: [], error: main?.error ?? 'Проверка не ответила.', by: [], note: null };
       } else {
-        check = { status: 'warn', issues: [], error: data?.error ?? 'Проверка не ответила.' };
+        const issues = norm(main.issues);
+        const by = ['Claude'];
+        let note: string | null = null;
+
+        // 2) second opinion — GPT, only when Claude found nothing
+        if (!issues.length) {
+          const second = await ask('openai');
+          if (second?.skipped) note = `GPT не проверял: ${second.reason ?? 'нет ключа'}`;
+          else if (second?.issues) {
+            by.push('GPT');
+            issues.push(...norm(second.issues, 'GPT: '));
+          } else note = `GPT не ответил: ${second?.error ?? 'неизвестно'}`;
+        }
+        const status = issues.some((i) => i.severity === 'fail') ? 'fail' : issues.length ? 'warn' : 'ok';
+        check = { status, issues, error: null, by, note };
       }
     } catch (e) {
-      check = { status: 'warn', issues: [], error: (e as Error).message };
+      check = { status: 'warn', issues: [], error: (e as Error).message, by: [], note: null };
     }
     const cur = get(id);
     patch(id, {
@@ -732,6 +757,12 @@ export default function MultiplyView({ visible = true }: { visible?: boolean }) 
                     {c.check?.error && (
                       <p className="mt-1 text-[11px] text-amber-600">Проверка не удалась: {c.check.error}</p>
                     )}
+                    {c.check && !c.check.error && !busy && (
+                      <p className="mt-1 text-[11px] text-muted">
+                        Проверили: {c.check.by.join(' + ')}
+                        {c.check.note ? <span className="text-amber-600"> · {c.check.note}</span> : null}
+                      </p>
+                    )}
                     {c.check && c.check.issues.length > 0 && (
                       <ul className="mt-1 space-y-0.5 text-[11px]">
                         {c.check.issues.map((it, k) => (
@@ -994,7 +1025,7 @@ export default function MultiplyView({ visible = true }: { visible?: boolean }) 
               <span>
                 Автопроверка и автоисправление
                 <span className="block text-xs text-muted">
-                  Claude сравнивает каждую копию с оригиналом. Заметные артефакты (✕) исправляются
+                  Claude сравнивает каждую копию с оригиналом; если он ничего не нашёл — второе мнение от GPT. Заметные артефакты (✕) исправляются
                   максимум за 4 шага: 2× основной моделью, 1× другой, 1× заново из оригинала —
                   один раз, без повторов. Мелкие (!) только показываются.
                 </span>

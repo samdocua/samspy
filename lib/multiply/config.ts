@@ -10,6 +10,7 @@
 //                         lists (min / medium), unique variations per batch.
 //   v0.2.0 (2026-11-20) — autoFix setting; photo check types + fixPrompt for the
 //                         check → fix pipeline.
+//   v0.2.1 (2026-11-20) — PhotoCheck.by (who checked) + note (second opinion skipped / failed).
 
 import {
   ASPECT_RATIOS,
@@ -181,7 +182,9 @@ export interface PhotoIssue {
 export interface PhotoCheck {
   status: 'ok' | 'warn' | 'fail';
   issues: PhotoIssue[];
-  error: string | null; // AI check failed
+  error: string | null; // main (Claude) check failed
+  by: string[]; // checkers that answered: «Claude», «GPT»
+  note: string | null; // second opinion skipped / failed — informational
 }
 
 /** Lower = better: fail = 3, warn = 1; unchecked / failed checks rank last. */
