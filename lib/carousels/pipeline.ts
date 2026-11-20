@@ -8,22 +8,32 @@
 //   ocr      → ~8 slides per batch: download image → Supabase Storage → OCR (cheap model)
 //   check    → one text-only call per post: flag odd slides + split the last slide (content/cta)
 //   escalate → re-OCR flagged slides with the expensive model (+ re-split if it was the last
-//              slide), then finalize posts (roles, watermarks → brand) → done
+//              slide), then finalize posts (roles, watermarks → brand, repeat check by text)
+//   stats    → outlier: author's median likes from their recent posts (one Apify run for
+//              all authors not cached in the last 7 days) → likes ÷ median → done
 //
 // A row lock (locked_until) keeps two open tabs from processing the same job at once.
 // Posts are shared between jobs by shortcode: an already collected post is reused for free.
 //
 // Version history:
 //   v0.4.0 (2026-11-18) — initial pipeline.
+//   v0.7.0 (2026-11-20) — posts base without repeats: createJob reports new / already in base;
+//                         finalize stores normalized text + hash and marks repeats
+//                         (duplicate_of = same text, similar_to = ≥ 90% alike); 'stats' step
+//                         computes outlier_ratio; listBasePosts() for «База постов».
+//   v0.7.1 (2026-11-20) — createStatsJob(): outlier for posts collected earlier (a job that
+//                         starts right at 'stats'); listBasePosts() also returns noOutlier.
 
+import { createHash } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
-  startRun, getRun, getItems, extractSlides, itemShortcode, parseLinks, RUN_FAILED,
+  startRun, startProfileRun, getRun, getItems, extractSlides, itemShortcode, parseLinks, RUN_FAILED,
 } from './apify';
 import { ocrSlide, checkPost, splitLastSlide, OCR_MODEL, ESCALATE_MODEL } from './claude';
 import { postProcess } from './postprocess';
 import type {
-  CarouselJob, CarouselJobCard, CarouselPost, CarouselPostFull, CarouselSlide, LastSplit,
+  CarouselJob, CarouselJobCard, CarouselPost, CarouselPostFull, CarouselSlide, CreateJobInfo,
+  LastSplit,
 } from './types';
 
 export const BUCKET = 'carousels';
@@ -34,10 +44,16 @@ const CHECK_BATCH = 6;
 const ESCALATE_BATCH = 4;
 const FINALIZE_BATCH = 10;
 const CONCURRENCY = 4;
+const AUTHOR_TTL_MS = 7 * 24 * 3600 * 1000; // median likes cache
+const STATS_WAIT_MS = 10 * 60 * 1000;       // give up on the authors run after this
+const SIMILAR_MIN = 0.9;                    // Jaccard of 3-word shingles
+const MIN_NORM_LEN = 30;                    // shorter texts are not compared
 
-const JOB_COLS = 'id,status,urls,apify_run_id,apify_dataset_id,error,locked_until,created_at,updated_at';
+const JOB_COLS =
+  'id,status,urls,apify_run_id,apify_dataset_id,error,locked_until,stats_run_id,stats_dataset_id,stats_started_at,created_at,updated_at';
 const POST_COLS =
-  'id,shortcode,url,author,posted_at,likes,comments,caption,brand,status,checked,last_split,error,created_at,updated_at';
+  'id,shortcode,url,author,posted_at,likes,comments,caption,brand,status,checked,last_split,error,' +
+  'text_hash,duplicate_of,similar_to,similarity,outlier_ratio,stats_done,created_at,updated_at';
 const SLIDE_COLS =
   'id,post_id,idx,source_url,image_path,is_video,ocr_done,raw_text,text,cta_text,role,model,check_status,issue,error';
 
@@ -102,7 +118,10 @@ async function setJob(sb: SupabaseClient, jobId: string, patch: Partial<Carousel
 
 // --- create ------------------------------------------------------------------
 
-export async function createJob(sb: SupabaseClient, text: string): Promise<CarouselJob> {
+export async function createJob(
+  sb: SupabaseClient,
+  text: string
+): Promise<{ job: CarouselJob; info: CreateJobInfo }> {
   const links = parseLinks(text);
   if (!links.length) throw new Error('Не нашёл ссылок на посты Instagram.');
   const codes = links.map((l) => l.shortcode);
@@ -155,7 +174,12 @@ export async function createJob(sb: SupabaseClient, text: string): Promise<Carou
       job.error = `Apify: ${errMsg(e)}`;
     }
   }
-  return job;
+  // Nothing new → the job still goes through 'stats' for posts without an outlier yet.
+  if (!fresh.length) {
+    await setJob(sb, job.id, { status: 'stats' });
+    job.status = 'stats';
+  }
+  return { job, info: { total: links.length, fresh: fresh.length, existing: ready.size } };
 }
 
 async function failJob(sb: SupabaseClient, jobId: string, error: string) {
@@ -204,7 +228,11 @@ export async function stepJob(sb: SupabaseClient, jobId: string): Promise<boolea
       } else if (status === 'check') {
         if (!(await stepCheck(sb, jobId))) status = 'escalate';
       } else if (status === 'escalate') {
-        if (!(await stepEscalate(sb, jobId)) && !(await stepFinalize(sb, jobId))) status = 'done';
+        if (!(await stepEscalate(sb, jobId)) && !(await stepFinalize(sb, jobId))) status = 'stats';
+      } else if (status === 'stats') {
+        const next = await stepStats(sb, job);
+        if (next === status) break; // authors run still going on Apify's side
+        status = next;
       }
       if (status !== job.status) {
         await setJob(sb, jobId, { status });
@@ -405,10 +433,127 @@ async function stepEscalate(sb: SupabaseClient, jobId: string): Promise<boolean>
   return true;
 }
 
-// finalize: roles + watermarks for pending posts → ready. Returns true if it processed something.
+// --- repeat check by text -----------------------------------------------------
+
+/** Lowercase letters/digits only, single spaces — so OCR punctuation / case don't matter. */
+export function normalizeText(t: string): string {
+  return t
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+/** Post text for the repeat check: all slides except a pure CTA slide. */
+function postNormText(slides: { role: string | null; text: string | null }[]): string {
+  return normalizeText(
+    slides
+      .filter((s) => s.role !== 'cta')
+      .map((s) => s.text ?? '')
+      .join(' ')
+  );
+}
+
+const sha1 = (t: string) => createHash('sha1').update(t).digest('hex');
+
+function shingles(t: string): Set<string> {
+  const w = t.split(' ').filter(Boolean);
+  const out = new Set<string>();
+  if (w.length < 3) {
+    w.forEach((x) => out.add(x));
+    return out;
+  }
+  for (let i = 0; i + 2 < w.length; i++) out.add(`${w[i]} ${w[i + 1]} ${w[i + 2]}`);
+  return out;
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  a.forEach((x) => {
+    if (b.has(x)) inter++;
+  });
+  return inter / (a.size + b.size - inter);
+}
+
+interface Candidate {
+  id: string;
+  hash: string;
+  sh: Set<string>;
+  len: number;
+}
+
+/** Posts already in the base (ready, not a duplicate) with their normalized text. */
+async function loadCandidates(sb: SupabaseClient, exclude: Set<string>): Promise<Candidate[]> {
+  await backfillNorm(sb);
+  const out: Candidate[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb
+      .from('carousel_posts')
+      .select('id,text_hash,norm_text')
+      .eq('status', 'ready')
+      .is('duplicate_of', null)
+      .not('text_hash', 'is', null)
+      .order('created_at')
+      .range(from, from + 999);
+    if (error) throw new Error(error.message);
+    for (const r of data ?? []) {
+      if (exclude.has(r.id) || !r.norm_text) continue;
+      out.push({ id: r.id, hash: r.text_hash, sh: shingles(r.norm_text), len: r.norm_text.length });
+    }
+    if (!data || data.length < 1000) break;
+  }
+  return out;
+}
+
+/** Posts collected before migration-005 get their normalized text once (no marking). */
+async function backfillNorm(sb: SupabaseClient) {
+  const { data: old } = await sb
+    .from('carousel_posts')
+    .select('id')
+    .eq('status', 'ready')
+    .is('norm_text', null)
+    .limit(200);
+  if (!old?.length) return;
+  const ids = old.map((p) => p.id);
+  const { data: slides } = await sb
+    .from('carousel_slides')
+    .select('post_id,idx,role,text')
+    .in('post_id', ids)
+    .order('idx');
+  for (const id of ids) {
+    const norm = postNormText((slides ?? []).filter((s) => s.post_id === id));
+    // '' marks "checked, too short" so the post is not picked up again
+    await sb
+      .from('carousel_posts')
+      .update({ norm_text: norm, text_hash: norm.length >= MIN_NORM_LEN ? sha1(norm) : null })
+      .eq('id', id);
+  }
+}
+
+/** Finds an earlier post with the same / very similar text. */
+function findRepeat(norm: string, cands: Candidate[]) {
+  if (norm.length < MIN_NORM_LEN) return { hash: null as string | null };
+  const hash = sha1(norm);
+  const same = cands.find((c) => c.hash === hash);
+  if (same) return { hash, duplicateOf: same.id };
+  const sh = shingles(norm);
+  let best: { id: string; sim: number } | null = null;
+  for (const c of cands) {
+    // Jaccard ≥ 0.9 is impossible when lengths differ a lot — skip cheaply
+    if (Math.min(c.len, norm.length) / Math.max(c.len, norm.length) < 0.7) continue;
+    const sim = jaccard(sh, c.sh);
+    if (sim >= SIMILAR_MIN && (!best || sim > best.sim)) best = { id: c.id, sim };
+  }
+  return best ? { hash, similarTo: best.id, similarity: Number(best.sim.toFixed(3)) } : { hash };
+}
+
+// finalize: roles + watermarks for pending posts → ready, + repeat check.
+// Returns true if it processed something.
 async function stepFinalize(sb: SupabaseClient, jobId: string): Promise<boolean> {
   const posts = (await pendingPosts(sb, jobId)).slice(0, FINALIZE_BATCH);
   if (!posts.length) return false;
+  const cands = await loadCandidates(sb, new Set(posts.map((p) => p.id)));
 
   for (const p of posts) {
     const { data: slides } = await sb
@@ -430,24 +575,165 @@ async function stepFinalize(sb: SupabaseClient, jobId: string): Promise<boolean>
       const { error } = await sb.from('carousel_slides').upsert(rows, { onConflict: 'id' });
       if (error) throw new Error(`finalize: ${error.message}`);
     }
+    const norm = postNormText(
+      all.map((s) => {
+        const r = res.slides.find((x) => x.idx === s.idx);
+        return { role: r?.role ?? null, text: r?.text ?? '' };
+      })
+    );
+    const rep = findRepeat(norm, cands);
     await sb
       .from('carousel_posts')
-      .update({ brand: res.brand || null, status: 'ready', updated_at: nowIso() })
+      .update({
+        brand: res.brand || null,
+        status: 'ready',
+        norm_text: norm,
+        text_hash: rep.hash,
+        duplicate_of: 'duplicateOf' in rep ? rep.duplicateOf : null,
+        similar_to: 'similarTo' in rep ? rep.similarTo : null,
+        similarity: 'similarity' in rep ? rep.similarity : null,
+        updated_at: nowIso(),
+      })
       .eq('id', p.id);
+    // later posts of the same batch are compared with this one too
+    if (rep.hash && !('duplicateOf' in rep)) {
+      cands.push({ id: p.id, hash: rep.hash, sh: shingles(norm), len: norm.length });
+    }
   }
   return true;
+}
+
+// --- stats: outlier ------------------------------------------------------------
+
+function median(nums: number[]): number {
+  if (!nums.length) return 0;
+  const a = [...nums].sort((x, y) => x - y);
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : Math.round((a[m - 1] + a[m]) / 2);
+}
+
+/** Returns the next status: 'stats' = waiting for the authors run, else 'done'. */
+async function stepStats(sb: SupabaseClient, job: CarouselJob): Promise<CarouselJob['status']> {
+  const ids = await jobPostIds(sb, job.id);
+  const { data } = ids.length
+    ? await sb
+        .from('carousel_posts')
+        .select('id,author,likes')
+        .in('id', ids)
+        .eq('status', 'ready')
+        .eq('stats_done', false)
+    : { data: [] as { id: string; author: string | null; likes: number | null }[] };
+  const posts = data ?? [];
+  if (!posts.length) return 'done';
+
+  const authors = Array.from(
+    new Set(posts.map((p) => p.author?.toLowerCase()).filter((a): a is string => !!a))
+  );
+  const { data: cached } = authors.length
+    ? await sb.from('carousel_authors').select('username,median_likes,fetched_at').in('username', authors)
+    : { data: [] as { username: string; median_likes: number | null; fetched_at: string }[] };
+  const fresh = new Map<string, number | null>();
+  for (const a of cached ?? []) {
+    if (Date.now() - new Date(a.fetched_at).getTime() < AUTHOR_TTL_MS) fresh.set(a.username, a.median_likes);
+  }
+  const missing = authors.filter((a) => !fresh.has(a));
+
+  if (missing.length) {
+    if (!job.stats_run_id) {
+      try {
+        const run = await startProfileRun(missing);
+        const patch = {
+          stats_run_id: run.id,
+          stats_dataset_id: run.defaultDatasetId,
+          stats_started_at: nowIso(),
+        };
+        await setJob(sb, job.id, patch);
+        Object.assign(job, patch);
+        return 'stats';
+      } catch (e) {
+        await saveAuthors(sb, missing, new Map(), `Apify: ${errMsg(e)}`, fresh);
+      }
+    } else {
+      const run = await getRun(job.stats_run_id);
+      const started = job.stats_started_at ? new Date(job.stats_started_at).getTime() : 0;
+      if (run.status === 'SUCCEEDED') {
+        const items = await getItems(job.stats_dataset_id!);
+        const likes = new Map<string, number[]>();
+        for (const it of items) {
+          const u = it.ownerUsername?.toLowerCase();
+          if (!u || typeof it.likesCount !== 'number' || it.likesCount <= 0) continue; // hidden likes
+          likes.set(u, [...(likes.get(u) ?? []), it.likesCount]);
+        }
+        await saveAuthors(sb, missing, likes, null, fresh);
+      } else if (RUN_FAILED.includes(run.status) || Date.now() - started > STATS_WAIT_MS) {
+        await saveAuthors(sb, missing, new Map(), `Apify run: ${run.status}`, fresh);
+      } else {
+        return 'stats'; // still running
+      }
+    }
+  }
+
+  for (const p of posts) {
+    const m = p.author ? fresh.get(p.author.toLowerCase()) : null;
+    const ratio = m && m > 0 && p.likes && p.likes > 0 ? Number((p.likes / m).toFixed(2)) : null;
+    await sb.from('carousel_posts').update({ outlier_ratio: ratio, stats_done: true }).eq('id', p.id);
+  }
+  if (job.stats_run_id) {
+    const patch = { stats_run_id: null, stats_dataset_id: null, stats_started_at: null };
+    await setJob(sb, job.id, patch);
+    Object.assign(job, patch);
+  }
+  return 'done';
+}
+
+/** Upserts the authors cache; also fills `fresh` with the new medians. */
+async function saveAuthors(
+  sb: SupabaseClient,
+  usernames: string[],
+  likes: Map<string, number[]>,
+  error: string | null,
+  fresh: Map<string, number | null>
+) {
+  const rows = usernames.map((u) => {
+    const l = likes.get(u) ?? [];
+    const med = l.length ? median(l) : null;
+    fresh.set(u, med);
+    return {
+      username: u,
+      median_likes: med,
+      posts_count: l.length,
+      error: error ?? (l.length ? null : 'нет постов с открытыми лайками'),
+      fetched_at: nowIso(),
+    };
+  });
+  if (rows.length) await sb.from('carousel_authors').upsert(rows, { onConflict: 'username' });
 }
 
 // --- read --------------------------------------------------------------------
 
 export async function getJobPosts(sb: SupabaseClient, jobId: string): Promise<CarouselPostFull[]> {
-  const ids = await jobPostIds(sb, jobId);
+  return loadPostsFull(sb, await jobPostIds(sb, jobId));
+}
+
+/** Posts (in the given order) with slides and, for repeats, the earlier post. */
+async function loadPostsFull(sb: SupabaseClient, ids: string[]): Promise<CarouselPostFull[]> {
   if (!ids.length) return [];
   const { data: posts } = await sb
     .from('carousel_posts')
     .select(POST_COLS)
     .in('id', ids)
     .returns<CarouselPost[]>();
+  const refIds = Array.from(
+    new Set(
+      (posts ?? [])
+        .map((p) => p.duplicate_of ?? p.similar_to)
+        .filter((x): x is string => !!x)
+    )
+  );
+  const { data: refs } = refIds.length
+    ? await sb.from('carousel_posts').select('id,url,author').in('id', refIds)
+    : { data: [] as { id: string; url: string; author: string | null }[] };
+  const refOf = new Map((refs ?? []).map((r) => [r.id, r]));
   // Supabase returns at most 1000 rows per request → page through slides.
   const slides: CarouselSlide[] = [];
   for (let from = 0; ; from += 1000) {
@@ -470,6 +756,7 @@ export async function getJobPosts(sb: SupabaseClient, jobId: string): Promise<Ca
     .filter((p): p is CarouselPost => !!p)
     .map((p) => ({
       ...p,
+      ref: refOf.get(p.duplicate_of ?? p.similar_to ?? '') ?? null,
       slides: slides
         .filter((s) => s.post_id === p.id)
         .map((s) => ({
@@ -541,4 +828,73 @@ async function decorate(sb: SupabaseClient, jobs: CarouselJob[]): Promise<Carous
     });
   }
   return cards;
+}
+
+// --- posts base («База постов») ------------------------------------------------
+
+export type BaseSort = 'recent' | 'likes' | 'outlier';
+
+export async function listBasePosts(
+  sb: SupabaseClient,
+  opts: { q?: string; sort?: BaseSort; minOutlier?: number; offset?: number; limit?: number }
+): Promise<{ posts: CarouselPostFull[]; total: number; noOutlier: number }> {
+  const limit = Math.min(100, Math.max(1, opts.limit ?? 50));
+  const offset = Math.max(0, opts.offset ?? 0);
+  let q = sb
+    .from('carousel_posts')
+    .select('id', { count: 'exact' })
+    .eq('status', 'ready')
+    .is('duplicate_of', null);
+  const term = (opts.q ?? '').replace(/[,()%*"\\]/g, ' ').trim();
+  if (term) {
+    const norm = normalizeText(term);
+    const parts = [`author.ilike."%${term.replace(/^@/, '')}%"`, `caption.ilike."%${term}%"`];
+    if (norm) parts.push(`norm_text.ilike."%${norm}%"`);
+    q = q.or(parts.join(','));
+  }
+  if (opts.minOutlier && opts.minOutlier > 0) q = q.gte('outlier_ratio', opts.minOutlier);
+  if (opts.sort === 'likes') q = q.order('likes', { ascending: false, nullsFirst: false });
+  else if (opts.sort === 'outlier') q = q.order('outlier_ratio', { ascending: false, nullsFirst: false });
+  q = q.order('created_at', { ascending: false });
+  const { data, count, error } = await q.range(offset, offset + limit - 1);
+  if (error) throw new Error(error.message);
+  const posts = await loadPostsFull(sb, (data ?? []).map((r) => r.id));
+  const { count: noOutlier } = await sb
+    .from('carousel_posts')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'ready')
+    .is('duplicate_of', null)
+    .eq('stats_done', false);
+  return { posts, total: count ?? 0, noOutlier: noOutlier ?? 0 };
+}
+
+/** A job that only counts the outlier for base posts that don't have it yet. */
+export async function createStatsJob(sb: SupabaseClient): Promise<CarouselJob | null> {
+  const { data: posts } = await sb
+    .from('carousel_posts')
+    .select('id,url')
+    .eq('status', 'ready')
+    .eq('stats_done', false)
+    .order('created_at')
+    .limit(300);
+  if (!posts?.length) return null;
+  const { data: job, error } = await sb
+    .from('carousel_jobs')
+    .insert({ status: 'stats', urls: posts.map((p) => p.url) })
+    .select(JOB_COLS)
+    .single<CarouselJob>();
+  if (error || !job) throw new Error(error?.message ?? 'Не удалось создать задачу.');
+  await sb
+    .from('carousel_job_posts')
+    .insert(posts.map((p, i) => ({ job_id: job.id, post_id: p.id, position: i })));
+  return job;
+}
+
+/** Deletes a post from the base (slides cascade; Storage images removed best-effort). */
+export async function deletePost(sb: SupabaseClient, id: string) {
+  const { data: slides } = await sb.from('carousel_slides').select('image_path').eq('post_id', id);
+  const paths = (slides ?? []).map((s) => s.image_path).filter((x): x is string => !!x);
+  if (paths.length) await sb.storage.from(BUCKET).remove(paths);
+  const { error } = await sb.from('carousel_posts').delete().eq('id', id);
+  if (error) throw new Error(error.message);
 }

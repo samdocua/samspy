@@ -1,12 +1,14 @@
 // SamSpy — carousel text collector: one-post-per-row table (same layout as posts.csv)
-//   post_url | author | posted_at | likes | comments | slides_count | hook | slide_2 … slide_N |
-//   cta | brand | caption | escalated | error
+//   post_url | author | posted_at | likes | comments | outlier | repeat | slides_count | hook | slide_2 … slide_N |
+//   brand | caption | escalated | error
 // Used by the UI table, the CSV download and the "copy" (TSV) button.
 //
 // Version history:
 //   v0.4.0 (2026-11-18) — buildTable, toCsv, toTsv.
 //   v0.5.0 (2026-11-18) — slide texts pass through joinSoftBreaks (also fixes
 //                         already collected posts, since it runs at read time).
+//   v0.6.0 (2026-11-19) — CTA column removed (CTA hidden for now; still stored in DB).
+//   v0.7.0 (2026-11-20) — outlier and repeat (дубль / похож на …) columns.
 
 import type { CarouselPostFull } from './types';
 import { joinSoftBreaks } from './postprocess';
@@ -28,8 +30,8 @@ export function buildTable(posts: CarouselPostFull[]): PostsTable {
   for (let i = 2; i <= maxBody; i++) slideCols.push(i);
 
   const header = [
-    'post_url', 'author', 'posted_at', 'likes', 'comments', 'slides_count',
-    'hook', ...slideCols.map((i) => `slide_${i}`), 'cta', 'brand', 'caption', 'escalated', 'error',
+    'post_url', 'author', 'posted_at', 'likes', 'comments', 'outlier', 'repeat', 'slides_count',
+    'hook', ...slideCols.map((i) => `slide_${i}`), 'brand', 'caption', 'escalated', 'error',
   ];
 
   const rows = posts.map((p) => {
@@ -38,7 +40,6 @@ export function buildTable(posts: CarouselPostFull[]): PostsTable {
       const s = p.slides.find((x) => x.idx === i && isBody(x));
       return joinSoftBreaks(s?.text ?? '');
     });
-    const cta = p.slides.filter((s) => s.cta_text).map((s) => joinSoftBreaks(s.cta_text as string)).join('\n\n');
     const escalated = p.slides
       .filter((s) => s.check_status === 'escalated')
       .map((s) => s.idx)
@@ -48,11 +49,20 @@ export function buildTable(posts: CarouselPostFull[]): PostsTable {
       .join(' | ');
     return [
       p.url, p.author ?? '', p.posted_at ?? '', String(p.likes ?? ''), String(p.comments ?? ''),
-      String(p.slides.length), hook, ...body, cta, p.brand ?? '', p.caption ?? '', escalated, errors,
+      p.outlier_ratio != null ? `${p.outlier_ratio}x` : '', repeatLabel(p),
+      String(p.slides.length), hook, ...body, p.brand ?? '', p.caption ?? '', escalated, errors,
     ];
   });
 
   return { slideCols, header, rows };
+}
+
+/** «дубль: url» / «похож 93%: url» / '' */
+export function repeatLabel(p: CarouselPostFull): string {
+  const ref = p.ref?.url ?? '';
+  if (p.duplicate_of) return `дубль: ${ref}`;
+  if (p.similar_to) return `похож ${Math.round((p.similarity ?? 0) * 100)}%: ${ref}`;
+  return '';
 }
 
 const quote = (v: string, re: RegExp) => (re.test(v) ? `"${v.replace(/"/g, '""')}"` : v);

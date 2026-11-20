@@ -4,6 +4,7 @@
 //
 // Version history:
 //   v0.4.0 (2026-11-18) — list + create.
+//   v0.7.0 (2026-11-20) — POST also returns info {total, fresh, existing}.
 
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase';
@@ -37,8 +38,8 @@ export async function POST(req: Request) {
 
   const supabase = createServiceClient();
   try {
-    const job = await createJob(supabase, body.text);
-    return NextResponse.json({ job: await getJobCard(supabase, job.id) });
+    const { job, info } = await createJob(supabase, body.text);
+    return NextResponse.json({ job: await getJobCard(supabase, job.id), info });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : String(err) },

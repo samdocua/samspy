@@ -20,6 +20,9 @@
 //   v0.5.0 (2026-11-18) — Instagram A/B styles: IG Classic, IG Modern, Montserrat.
 //   v0.6.0 (2026-11-19) — IG Literature, IG Strong, Reels captions styles;
 //                         textRotate (°) and subtitleSize (% of title) settings.
+//   v0.7.0 (2026-11-19) — autoFix: check every generated slide and auto-fix photo artifacts.
+//   v0.7.1 (2026-11-19) — default text position «Верх» with offset −6 (multi-line text grows
+//                         downward instead of creeping to the top edge); altModelFor().
 
 export type Provider = 'gemini' | 'fal';
 
@@ -57,6 +60,13 @@ export const IMAGE_MODELS: ImageModel[] = [
 
 export function findModel(id: string): ImageModel | undefined {
   return IMAGE_MODELS.find((m) => m.id === id);
+}
+
+/** The «other» image model used when auto-fix with the main model keeps failing. */
+export function altModelFor(modelId: string): ImageModel {
+  const main = findModel(modelId);
+  const altId = main?.provider === 'gemini' ? 'openai/gpt-image-2.6/flare/edit' : 'gemini-3.1-flash-image';
+  return findModel(altId) ?? IMAGE_MODELS[0];
 }
 
 export function estimateCost(
@@ -153,6 +163,7 @@ export interface SlidesSettings {
   textMaxWidth: number; // wrap width, % of slide width
   textRotate: number; // block rotation, degrees (+ = clockwise)
   subtitleSize: number; // text after a blank line, % of the title size
+  autoFix: boolean; // after generation: check the slide and auto-fix photo artifacts
 }
 
 // v0.3.0: keep landmarks/architecture intact, change the camera only slightly —
@@ -171,12 +182,13 @@ export const DEFAULT_SETTINGS: SlidesSettings = {
   size: '1K',
   quality: 'medium',
   textSize: 4,
-  textPosition: 'center',
+  textPosition: 'top',
   textStyle: 'classic',
-  textOffset: -43,
+  textOffset: -6,
   textMaxWidth: 72,
   textRotate: 0,
   subtitleSize: 60,
+  autoFix: true,
 };
 
 function pick<T extends string>(v: unknown, allowed: readonly T[], d: T): T {
@@ -205,5 +217,6 @@ export function sanitizeSettings(raw: unknown): SlidesSettings {
     textMaxWidth: num(r.textMaxWidth, 20, 100, d.textMaxWidth),
     textRotate: num(r.textRotate, -45, 45, d.textRotate),
     subtitleSize: num(r.subtitleSize, 30, 100, d.subtitleSize),
+    autoFix: typeof r.autoFix === 'boolean' ? r.autoFix : d.autoFix,
   };
 }

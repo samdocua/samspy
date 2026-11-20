@@ -5,6 +5,8 @@
 //
 // Version history:
 //   v0.4.0 (2026-11-18) — start run / get run / get items, slide extraction, link parsing.
+//   v0.7.0 (2026-11-20) — startProfileRun(): recent posts of authors (official actor,
+//                         ~20 per author, env APIFY_PROFILE_POSTS) for the outlier median.
 
 const API = 'https://api.apify.com/v2';
 
@@ -60,6 +62,26 @@ export async function startRun(urls: string[]): Promise<ApifyRun> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(a.input(urls)),
+    }
+  );
+  return data.data;
+}
+
+/** Recent posts of each author (for median likes). One run for all usernames. */
+export const PROFILE_POSTS = Math.max(5, Math.min(50, Number(process.env.APIFY_PROFILE_POSTS) || 20));
+
+export async function startProfileRun(usernames: string[]): Promise<ApifyRun> {
+  const data = await fetchJson<{ data: ApifyRun }>(
+    `${API}/acts/${ACTORS.official.id}/runs?token=${token()}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        directUrls: usernames.map((u) => `https://www.instagram.com/${u}/`),
+        resultsType: 'posts',
+        resultsLimit: PROFILE_POSTS,
+        addParentData: false,
+      }),
     }
   );
   return data.data;

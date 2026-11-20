@@ -2,8 +2,11 @@
 //
 // Version history:
 //   v0.4.0 (2026-11-18) — jobs, posts, job↔post links, slides.
+//   v0.7.0 (2026-11-20) — migration-005: repeat check fields, outlier, 'stats' job step,
+//                         authors cache, posts base list types.
 
-export type CarouselJobStatus = 'apify' | 'ocr' | 'check' | 'escalate' | 'done' | 'failed';
+export type CarouselJobStatus =
+  | 'apify' | 'ocr' | 'check' | 'escalate' | 'stats' | 'done' | 'failed';
 
 export interface CarouselJob {
   id: string;
@@ -13,6 +16,9 @@ export interface CarouselJob {
   apify_dataset_id: string | null;
   error: string | null;
   locked_until: string | null;
+  stats_run_id: string | null;
+  stats_dataset_id: string | null;
+  stats_started_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -38,6 +44,12 @@ export interface CarouselPost {
   checked: boolean;
   last_split: LastSplit | null;
   error: string | null;
+  text_hash: string | null;
+  duplicate_of: string | null;   // same text as an earlier post → hidden from the base
+  similar_to: string | null;     // ≥ 90% alike an earlier post → marked, stays in the base
+  similarity: number | null;     // 0..1
+  outlier_ratio: number | null;  // likes ÷ author's median likes
+  stats_done: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -74,4 +86,13 @@ export interface CarouselJobCard extends CarouselJob {
 /** Post with its slides (detail view, CSV). image_url = public Storage URL. */
 export interface CarouselPostFull extends CarouselPost {
   slides: (CarouselSlide & { image_url: string | null })[];
+  /** For duplicate_of / similar_to: the earlier post (author + link). */
+  ref?: { id: string; url: string; author: string | null } | null;
+}
+
+/** Result of creating a job: how many links were new vs already in the base. */
+export interface CreateJobInfo {
+  total: number;
+  fresh: number;
+  existing: number;
 }

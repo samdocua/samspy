@@ -26,6 +26,8 @@
 //   v0.4.1 (2026-11-19) — stripJpegMetadata(): canvasToBlob output has every APPn
 //                         (EXIF/XMP/IPTC/ICC) and COM segment removed, only JFIF kept.
 //   v0.4.2 (2026-11-19) — JFIF (APP0) removed too: the file has no metadata at all.
+//   v0.5.0 (2026-11-19) — layoutText() split out of drawText (used by slide checks).
+//   v0.5.1 (2026-11-19) — ensureFonts() exported (checks must measure with real fonts).
 
 import type { TextPosition, TextStyleId } from './config';
 
@@ -40,7 +42,7 @@ export interface TextOptions {
   rotateDeg: number; // block rotation, degrees (+ = clockwise)
 }
 
-type Effect = 'outline' | 'shadow' | 'plateWhite' | 'plateBlack';
+export type Effect = 'outline' | 'shadow' | 'plateWhite' | 'plateBlack';
 
 interface StyleSpec {
   family: string; // web font family (loaded via @fontsource in SlidesView)
@@ -75,7 +77,7 @@ const STYLE_SPECS: Record<TextStyleId, StyleSpec> = {
 
 // Canvas won't wait for web fonts — load every family/weight we draw with first.
 let fontsReady: Promise<void> | null = null;
-function ensureFonts(): Promise<void> {
+export function ensureFonts(): Promise<void> {
   if (!fontsReady) {
     const seen = new Set<string>();
     const loads: Promise<unknown>[] = [];
@@ -136,7 +138,7 @@ export async function compressImage(file: Blob, maxSide = 1600, quality = 0.9): 
   }
 }
 
-function drawCover(ctx: CanvasRenderingContext2D, img: HTMLImageElement, w: number, h: number) {
+export function drawCover(ctx: CanvasRenderingContext2D, img: HTMLImageElement, w: number, h: number) {
   const s = Math.max(w / img.naturalWidth, h / img.naturalHeight);
   const dw = img.naturalWidth * s;
   const dh = img.naturalHeight * s;
@@ -192,8 +194,23 @@ interface LaidLine {
   lh: number; // line height
 }
 
-export function drawText(ctx: CanvasRenderingContext2D, w: number, h: number, o: TextOptions) {
-  if (!o.text.trim()) return; // empty = no text
+export interface TextLayout {
+  lines: (LaidLine & { width: number })[];
+  top: number; // block top, canvas px (before rotation)
+  blockH: number;
+  cx: number; // block centre x
+  effect: Effect;
+  setFont: (fs: number) => void;
+}
+
+/** Wraps and positions the text block (no drawing). Shared by drawText and the checks. */
+export function layoutText(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  o: TextOptions
+): TextLayout | null {
+  if (!o.text.trim()) return null; // empty = no text
 
   const spec = STYLE_SPECS[o.style] ?? STYLE_SPECS.classic;
   const titleFs = Math.max(8, (w * o.sizePct) / 100);
@@ -212,26 +229,33 @@ export function drawText(ctx: CanvasRenderingContext2D, w: number, h: number, o:
   const [titlePart, ...rest] = text.split(/\n\s*\n/);
   const subPart = rest.join('\n');
 
-  const lines: LaidLine[] = [];
+  const lines: (LaidLine & { width: number })[] = [];
   let y = 0;
   const lay = (part: string, fs: number) => {
     setFont(fs);
     for (const t of wrapText(ctx, part, maxW)) {
       const lh = fs * spec.lineHeight;
-      lines.push({ text: t, fs, top: y, lh });
+      lines.push({ text: t, fs, top: y, lh, width: ctx.measureText(t).width });
       y += lh;
     }
   };
   lay(titlePart, titleFs);
   if (lines.length && subPart.trim()) y += titleFs * 0.15; // small gap before the subtitle
   lay(subPart, subFs);
-  if (!lines.length) return;
+  if (!lines.length) return null;
 
   const blockH = y;
   let top =
     o.position === 'top' ? h * 0.1 : o.position === 'bottom' ? h * 0.9 - blockH : (h - blockH) / 2;
   top += (h * o.offsetPct) / 100;
-  const cx = w / 2;
+  return { lines, top, blockH, cx: w / 2, effect: spec.effect, setFont };
+}
+
+export function drawText(ctx: CanvasRenderingContext2D, w: number, h: number, o: TextOptions) {
+  const L = layoutText(ctx, w, h, o);
+  if (!L) return;
+  const spec = STYLE_SPECS[o.style] ?? STYLE_SPECS.classic;
+  const { lines, top, blockH, cx, setFont } = L;
   const midY = (l: LaidLine) => top + l.top + l.lh / 2;
 
   ctx.save();

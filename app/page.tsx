@@ -7,6 +7,8 @@
 //                         platform, so the platform pills hide on it.
 //   v0.5.0 (2026-11-18) — merged «Карусели» tab (Instagram only): carousel slide
 //                         texts via Apify + Claude OCR (from the carousels branch).
+//   v0.6.0 (2026-11-19) — «→ В слайды»: carousel texts handed to SlidesView; the
+//                         carousels tab stays mounted so an open job isn't lost.
 'use client';
 
 import { useState } from 'react';
@@ -16,6 +18,7 @@ import TopReelsView from './components/TopReelsView';
 import SearchView from './components/SearchView';
 import SlidesView from './components/SlidesView';
 import CarouselsView from './components/CarouselsView';
+import type { SlidesImport } from '@/lib/carousels/toSlides';
 
 async function logout() {
   await fetch('/api/auth/logout', { method: 'POST' });
@@ -41,6 +44,7 @@ const PLATFORMS: { id: Platform; label: string }[] = [
 export default function Home() {
   const [platform, setPlatform] = useState<Platform>('instagram');
   const [tab, setTab] = useState<Tab>('competitors');
+  const [slidesImport, setSlidesImport] = useState<SlidesImport | null>(null);
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-6">
@@ -110,10 +114,18 @@ export default function Home() {
       )}
       {tab === 'search' && <SearchView key={platform} platform={platform} />}
       {tab === 'top' && <TopReelsView key={platform} platform={platform} />}
-      {tab === 'carousels' && platform === 'instagram' && <CarouselsView />}
+      {/* carousels stays mounted (keeps an open job + its progress polling) */}
+      <div className={tab === 'carousels' && platform === 'instagram' ? '' : 'hidden'}>
+        <CarouselsView
+          onSendToSlides={(imp) => {
+            setSlidesImport(imp);
+            setTab('slides');
+          }}
+        />
+      </div>
       {/* slides stays mounted so generated images survive tab switches */}
       <div className={tab === 'slides' ? '' : 'hidden'}>
-        <SlidesView visible={tab === 'slides'} />
+        <SlidesView visible={tab === 'slides'} incoming={slidesImport} />
       </div>
     </main>
   );

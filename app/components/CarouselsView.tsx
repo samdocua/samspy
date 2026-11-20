@@ -7,23 +7,40 @@
 //   v0.4.0 (2026-11-18) — create job, jobs list with progress, result table (one post per row),
 //                         CSV download, copy for Google Sheets.
 //   v0.5.0 (2026-11-18) — table cells use joinSoftBreaks (layout line wraps glued).
+//   v0.6.0 (2026-11-19) — CTA column removed; «→ В слайды» per post (onSendToSlides).
+//   v0.7.0 (2026-11-20) — «База постов» (all collected posts once, search / sort / min outlier,
+//                         delete) next to «Задачи»; after «Собрать»: N new / M already in base;
+//                         outlier badge (likes ÷ author's median likes); «Дубль» / «Похож на …».
+//   v0.7.1 (2026-11-20) — «Посчитать outlier (N)» for posts collected earlier.
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CarouselJobCard, CarouselPostFull, CarouselJobStatus } from '@/lib/carousels/types';
+import type {
+  CarouselJobCard, CarouselPostFull, CarouselJobStatus, CreateJobInfo,
+} from '@/lib/carousels/types';
 import { buildTable, toTsv } from '@/lib/carousels/table';
+import { outlierLabel } from '@/lib/format';
 import { joinSoftBreaks } from '@/lib/carousels/postprocess';
+import { makeSlidesImport, type SlidesImport } from '@/lib/carousels/toSlides';
 
 const STATUS: Record<CarouselJobStatus, { label: string; cls: string }> = {
   apify: { label: 'Apify собирает посты', cls: 'bg-amber-50 text-amber-700' },
   ocr: { label: 'Распознаю текст', cls: 'bg-blue-50 text-blue-700' },
   check: { label: 'Проверка', cls: 'bg-blue-50 text-blue-700' },
   escalate: { label: 'Перепроверка', cls: 'bg-blue-50 text-blue-700' },
+  stats: { label: 'Считаю outlier', cls: 'bg-blue-50 text-blue-700' },
   done: { label: 'Готово', cls: 'bg-green-50 text-green-700' },
   failed: { label: 'Ошибка', cls: 'bg-red-50 text-red-700' },
 };
 
 const isActive = (s: CarouselJobStatus) => s !== 'done' && s !== 'failed';
+const OUTLIER_HOT = 3; // badge is highlighted from this ratio
+
+function createdNotice(i: CreateJobInfo): string {
+  if (!i.fresh) return `Все ${i.total} уже в базе — новых нет, повторно не собираю.`;
+  if (!i.existing) return `${i.total} новых — собираю.`;
+  return `${i.total} ссылок: ${i.fresh} новых — собираю, ${i.existing} уже в базе — пропускаю.`;
+}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function fmtDate(iso: string) {
@@ -32,11 +49,18 @@ function fmtDate(iso: string) {
   });
 }
 
-export default function CarouselsView() {
+export default function CarouselsView({
+  onSendToSlides,
+}: {
+  onSendToSlides?: (imp: SlidesImport) => void;
+}) {
   const [jobs, setJobs] = useState<CarouselJobCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState<string | null>(null);
   const [manage, setManage] = useState(false);
+  const [view, setView] = useState<'base' | 'jobs'>('base');
+  const [notice, setNotice] = useState<string | null>(null);
+  const [baseKey, setBaseKey] = useState(0); // bump → «База постов» reloads
   const jobsRef = useRef<CarouselJobCard[]>([]);
   jobsRef.current = jobs;
 
@@ -67,10 +91,11 @@ export default function CarouselsView() {
             const res = await fetch(`/api/carousels/jobs/${j.id}/step`, { method: 'POST' });
             const data = await res.json();
             if (data.job && alive) {
+              if (j.status !== 'done' && data.job.status === 'done') setBaseKey((k) => k + 1);
               setJobs((prev) => prev.map((x) => (x.id === data.job.id ? data.job : x)));
             }
             // apify waits on the other side; busy = another tab works on it
-            if (data.busy || data.job?.status === 'apify') await sleep(4000);
+            if (data.busy || data.job?.status === 'apify' || data.job?.status === 'stats') await sleep(4000);
           } catch {
             await sleep(5000);
           }
@@ -91,29 +116,61 @@ export default function CarouselsView() {
 
   if (openId) {
     const job = jobs.find((j) => j.id === openId) ?? null;
-    return <JobDetail jobId={openId} job={job} onBack={() => setOpenId(null)} />;
+    return (
+      <JobDetail
+        jobId={openId}
+        job={job}
+        onBack={() => setOpenId(null)}
+        onSendToSlides={onSendToSlides}
+      />
+    );
   }
 
   return (
     <div className="flex flex-col gap-5">
       <CreateJob
-        onCreated={(job) => {
+        notice={notice}
+        onCreated={(job, info) => {
           setJobs((prev) => [job, ...prev]);
+          setNotice(info ? createdNotice(info) : null);
         }}
       />
 
-      {jobs.length > 0 && (
-        <div className="flex justify-end">
+      <div className="flex items-center gap-1">
+        {(
+          [
+            ['base', 'База постов'],
+            ['jobs', `Задачи${jobs.length ? ` (${jobs.length})` : ''}`],
+          ] as const
+        ).map(([v, label]) => (
+          <button
+            key={v}
+            onClick={() => setView(v)}
+            className={`rounded-full px-3 py-1 text-sm ${
+              view === v ? 'bg-gray-900 text-white' : 'text-muted hover:text-gray-900'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+        {view === 'jobs' && jobs.length > 0 && (
           <button
             onClick={() => setManage((m) => !m)}
-            className="text-sm text-muted hover:text-gray-900"
+            className="ml-auto text-sm text-muted hover:text-gray-900"
           >
             {manage ? 'Готово' : 'Управление'}
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
-      {loading ? (
+      {view === 'base' ? (
+        <BaseView
+          refreshKey={baseKey}
+          statsRunning={jobs.some((j) => j.status === 'stats')}
+          onStatsJob={(job) => setJobs((prev) => [job, ...prev])}
+          onSendToSlides={onSendToSlides}
+        />
+      ) : loading ? (
         <p className="py-10 text-center text-muted">Загрузка…</p>
       ) : jobs.length === 0 ? (
         <p className="py-10 text-center text-muted">
@@ -137,7 +194,13 @@ export default function CarouselsView() {
 }
 
 // --- create ----------------------------------------------------------------
-function CreateJob({ onCreated }: { onCreated: (job: CarouselJobCard) => void }) {
+function CreateJob({
+  notice,
+  onCreated,
+}: {
+  notice: string | null;
+  onCreated: (job: CarouselJobCard, info: CreateJobInfo | null) => void;
+}) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -164,7 +227,7 @@ function CreateJob({ onCreated }: { onCreated: (job: CarouselJobCard) => void })
         setErr(data.error ?? 'Не удалось создать задачу.');
       } else {
         setText('');
-        onCreated(data.job);
+        onCreated(data.job, data.info ?? null);
       }
     } catch {
       setErr('Ошибка сети.');
@@ -196,7 +259,11 @@ function CreateJob({ onCreated }: { onCreated: (job: CarouselJobCard) => void })
           >
             {busy ? 'Запускаю…' : `Собрать${count ? ` (${count})` : ''}`}
           </button>
-          {err && <span className="text-xs text-red-600">{err}</span>}
+          {err ? (
+            <span className="text-xs text-red-600">{err}</span>
+          ) : (
+            notice && <span className="text-xs text-muted">{notice}</span>
+          )}
         </div>
       </form>
     </div>
@@ -260,11 +327,12 @@ function JobRow({
 
 // --- detail ----------------------------------------------------------------
 function JobDetail({
-  jobId, job, onBack,
+  jobId, job, onBack, onSendToSlides,
 }: {
   jobId: string;
   job: CarouselJobCard | null;
   onBack: () => void;
+  onSendToSlides?: (imp: SlidesImport) => void;
 }) {
   const [posts, setPosts] = useState<CarouselPostFull[]>([]);
   const [loading, setLoading] = useState(true);
@@ -334,55 +402,241 @@ function JobDetail({
           {status && isActive(status) ? 'Собираю… результаты появятся здесь.' : 'Нет результатов.'}
         </p>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-edge bg-white shadow-sm">
-          <table className="min-w-full border-collapse text-xs">
-            <thead className="bg-gray-50 text-left text-muted">
-              <tr>
-                <th className="sticky left-0 z-10 bg-gray-50 px-3 py-2 font-medium">Пост</th>
-                <th className="px-3 py-2 font-medium">Хук</th>
-                {table.slideCols.map((i) => (
-                  <th key={i} className="px-3 py-2 font-medium">
-                    Слайд {i}
-                  </th>
-                ))}
-                <th className="px-3 py-2 font-medium">CTA</th>
-                <th className="px-3 py-2 font-medium">Подпись</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...ready, ...failed].map((p) => (
-                <PostRow key={p.id} post={p} slideCols={table.slideCols} />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <PostsTable posts={[...ready, ...failed]} onSendToSlides={onSendToSlides} />
       )}
+    </div>
+  );
+}
+
+// --- posts base ----------------------------------------------------------------
+type BaseSort = 'recent' | 'likes' | 'outlier';
+const PAGE = 50;
+
+function BaseView({
+  refreshKey,
+  statsRunning,
+  onStatsJob,
+  onSendToSlides,
+}: {
+  refreshKey: number;
+  statsRunning: boolean;
+  onStatsJob: (job: CarouselJobCard) => void;
+  onSendToSlides?: (imp: SlidesImport) => void;
+}) {
+  const [noOutlier, setNoOutlier] = useState(0);
+  const [starting, setStarting] = useState(false);
+  const [q, setQ] = useState('');
+  const [sort, setSort] = useState<BaseSort>('recent');
+  const [minOutlier, setMinOutlier] = useState(0);
+  const [posts, setPosts] = useState<CarouselPostFull[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [more, setMore] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = useCallback(
+    async (offset: number) => {
+      const params = new URLSearchParams({
+        q, sort, min_outlier: String(minOutlier), offset: String(offset), limit: String(PAGE),
+      });
+      try {
+        const res = await fetch(`/api/carousels/posts?${params}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+        setPosts((prev) => (offset ? [...prev, ...(data.posts ?? [])] : data.posts ?? []));
+        setTotal(data.total ?? 0);
+        setNoOutlier(data.noOutlier ?? 0);
+        setErr(null);
+      } catch (e) {
+        setErr((e as Error).message);
+      } finally {
+        setLoading(false);
+        setMore(false);
+      }
+    },
+    [q, sort, minOutlier]
+  );
+
+  // search is debounced; filters / a finished job reload from the first page
+  useEffect(() => {
+    const t = setTimeout(() => load(0), q ? 350 : 0);
+    return () => clearTimeout(t);
+  }, [load, q, refreshKey]);
+
+  async function countOutlier() {
+    setStarting(true);
+    try {
+      const res = await fetch('/api/carousels/posts', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      if (data.job) onStatsJob(data.job);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  async function remove(p: CarouselPostFull) {
+    if (!confirm(`Удалить пост @${p.author ?? '—'} из базы? Его можно будет собрать заново.`)) return;
+    const res = await fetch(`/api/carousels/posts/${p.id}`, { method: 'DELETE' });
+    if (!res.ok) return alert('Не удалось удалить.');
+    setPosts((prev) => prev.filter((x) => x.id !== p.id));
+    setTotal((t) => Math.max(0, t - 1));
+  }
+
+  return (
+    <div className="flex flex-col gap-3 pb-10">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Поиск по тексту или @автору"
+          className="w-64 rounded-lg border border-edge bg-white px-3 py-1.5 outline-none focus:border-accent"
+        />
+        <select
+          value={sort}
+          onChange={(e) => setSort(e.target.value as BaseSort)}
+          className="rounded-lg border border-edge bg-white px-2 py-1.5"
+        >
+          <option value="recent">Сначала новые</option>
+          <option value="likes">По лайкам</option>
+          <option value="outlier">По outlier</option>
+        </select>
+        <label className="flex items-center gap-1 text-muted">
+          outlier от
+          <select
+            value={minOutlier}
+            onChange={(e) => setMinOutlier(Number(e.target.value))}
+            className="rounded-lg border border-edge bg-white px-2 py-1.5 text-gray-900"
+          >
+            {[0, 2, 3, 5, 10, 50].map((v) => (
+              <option key={v} value={v}>
+                {v ? `${v}x` : 'любой'}
+              </option>
+            ))}
+          </select>
+        </label>
+        {(noOutlier > 0 || statsRunning) && (
+          <button
+            onClick={() => void countOutlier()}
+            disabled={starting || statsRunning}
+            title="Докачает последние посты авторов через Apify (~$0.03–0.05 на автора)"
+            className="rounded-lg border border-edge bg-white px-3 py-1.5 text-xs disabled:opacity-50"
+          >
+            {statsRunning ? 'Считаю outlier…' : `Посчитать outlier (${noOutlier})`}
+          </button>
+        )}
+        <span className="ml-auto text-xs text-muted">постов: {total}</span>
+      </div>
+
+      {err && <p className="text-xs text-red-600">{err}</p>}
+      {loading ? (
+        <p className="py-10 text-center text-muted">Загрузка…</p>
+      ) : !posts.length ? (
+        <p className="py-10 text-center text-muted">
+          {q || minOutlier ? 'Ничего не найдено.' : 'База пуста. Вставь ссылки выше — посты появятся здесь.'}
+        </p>
+      ) : (
+        <>
+          <PostsTable posts={posts} onSendToSlides={onSendToSlides} onDelete={remove} />
+          {posts.length < total && (
+            <button
+              onClick={() => {
+                setMore(true);
+                load(posts.length);
+              }}
+              disabled={more}
+              className="self-center rounded-lg border border-edge bg-white px-4 py-2 text-sm disabled:opacity-40"
+            >
+              {more ? 'Загружаю…' : `Показать ещё (${total - posts.length})`}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function PostsTable({
+  posts,
+  onSendToSlides,
+  onDelete,
+}: {
+  posts: CarouselPostFull[];
+  onSendToSlides?: (imp: SlidesImport) => void;
+  onDelete?: (p: CarouselPostFull) => void;
+}) {
+  const { slideCols } = buildTable(posts);
+  return (
+    <div className="overflow-x-auto rounded-xl border border-edge bg-white shadow-sm">
+      <table className="min-w-full border-collapse text-xs">
+        <thead className="bg-gray-50 text-left text-muted">
+          <tr>
+            <th className="sticky left-0 z-10 bg-gray-50 px-3 py-2 font-medium">Пост</th>
+            <th className="px-3 py-2 font-medium">Хук</th>
+            {slideCols.map((i) => (
+              <th key={i} className="px-3 py-2 font-medium">
+                Слайд {i}
+              </th>
+            ))}
+            <th className="px-3 py-2 font-medium">Подпись</th>
+          </tr>
+        </thead>
+        <tbody>
+          {posts.map((p) => (
+            <PostRow
+              key={p.id}
+              post={p}
+              slideCols={slideCols}
+              onSendToSlides={onSendToSlides}
+              onDelete={onDelete}
+            />
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
 
 const cell = 'min-w-[200px] max-w-[260px] whitespace-pre-wrap align-top px-3 py-2 text-gray-900';
 
-function PostRow({ post, slideCols }: { post: CarouselPostFull; slideCols: number[] }) {
+function PostRow({
+  post,
+  slideCols,
+  onSendToSlides,
+  onDelete,
+}: {
+  post: CarouselPostFull;
+  slideCols: number[];
+  onSendToSlides?: (imp: SlidesImport) => void;
+  onDelete?: (p: CarouselPostFull) => void;
+}) {
   const cover = post.slides[0]?.image_url;
   const isBody = (s: CarouselPostFull['slides'][number]) =>
     (s.role === 'body' || s.role === 'body+cta') && !!s.text;
   const hook = joinSoftBreaks(post.slides.find((s) => s.role === 'hook')?.text ?? '');
-  const cta = post.slides
-    .filter((s) => s.cta_text)
-    .map((s) => joinSoftBreaks(s.cta_text ?? ''))
-    .join('\n\n');
   const escalated = post.slides.filter((s) => s.check_status === 'escalated').map((s) => s.idx);
 
   return (
     <tr className="border-t border-edge">
       <td className="sticky left-0 z-10 w-[150px] bg-white px-3 py-2 align-top">
-        <a href={post.url} target="_blank" rel="noreferrer" className="block">
+        <a href={post.url} target="_blank" rel="noreferrer" className="relative block w-20">
           {cover ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={cover} alt="" className="mb-1 h-24 w-20 rounded-md object-cover" />
           ) : (
             <div className="mb-1 h-24 w-20 rounded-md bg-gray-100" />
+          )}
+          {post.outlier_ratio != null && (
+            <span
+              title="Лайки ÷ медиана лайков последних постов автора"
+              className={`absolute left-1 top-1 rounded px-1.5 py-0.5 text-[11px] font-bold ${
+                post.outlier_ratio >= OUTLIER_HOT ? 'bg-accent text-white' : 'bg-black/70 text-white'
+              }`}
+            >
+              {outlierLabel(post.outlier_ratio)}
+            </span>
           )}
           <div className="truncate font-medium text-gray-900">@{post.author ?? '—'}</div>
         </a>
@@ -393,7 +647,44 @@ function PostRow({ post, slideCols }: { post: CarouselPostFull; slideCols: numbe
         {escalated.length > 0 && (
           <div className="text-amber-700">Sonnet: {escalated.join(', ')}</div>
         )}
+        {post.duplicate_of && (
+          <div className="text-red-600">
+            Дубль{' '}
+            {post.ref && (
+              <a href={post.ref.url} target="_blank" rel="noreferrer" className="underline">
+                @{post.ref.author ?? '—'}
+              </a>
+            )}
+          </div>
+        )}
+        {post.similar_to && (
+          <div className="text-amber-700">
+            Похож на{' '}
+            {post.ref && (
+              <a href={post.ref.url} target="_blank" rel="noreferrer" className="underline">
+                @{post.ref.author ?? '—'}
+              </a>
+            )}{' '}
+            ({Math.round((post.similarity ?? 0) * 100)}%)
+          </div>
+        )}
         {post.error && <div className="text-red-600">{post.error}</div>}
+        {onSendToSlides && post.status === 'ready' && (
+          <button
+            onClick={() => onSendToSlides(makeSlidesImport(post))}
+            className="mt-2 rounded-md bg-accent px-2 py-1 text-[11px] font-medium text-white"
+          >
+            → В слайды
+          </button>
+        )}
+        {onDelete && (
+          <button
+            onClick={() => onDelete(post)}
+            className="mt-1 block text-[11px] text-red-600 hover:underline"
+          >
+            Удалить из базы
+          </button>
+        )}
       </td>
       <td className={`${cell} font-medium`}>{hook}</td>
       {slideCols.map((i) => {
@@ -404,7 +695,6 @@ function PostRow({ post, slideCols }: { post: CarouselPostFull; slideCols: numbe
           </td>
         );
       })}
-      <td className={`${cell} text-muted`}>{cta}</td>
       <td className={`${cell} text-muted`}>{post.caption ?? ''}</td>
     </tr>
   );
