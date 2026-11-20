@@ -3,7 +3,7 @@
 // Text overlay only (photos are generated in «Размножение»): photo per slide (random pick
 // from a folder of copies, or drag / Cmd+V) → text overlay on canvas → check of the overlay
 // → download JPEG / ZIP. Images live in memory until reload; settings persist in
-// localStorage and can be exported / imported as JSON.
+// localStorage.
 //
 // Version history:
 //   v0.1.0 (2026-11-18) — slide strip, per-slide text, generate / generate all,
@@ -56,6 +56,7 @@
 //   v1.0.2 (2026-11-20) — all inputs / selects one height (ctrlCls, h-10); «Сбросить память»
 //                         always shown in the folder block (disabled at 0); toolbar
 //                         «Сбросить» → «Сбросить настройки».
+//   v1.0.3 (2026-11-20) — settings export / import removed (not needed).
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -78,7 +79,7 @@ import {
   type SlidesSettings,
 } from '@/lib/slides/config';
 import { canvasToBlob, compressImage, renderSlide, type TextOptions } from '@/lib/slides/render';
-import { pickSaveTarget, stamp, triggerDownload } from '@/lib/slides/save';
+import { pickSaveTarget, stamp } from '@/lib/slides/save';
 import { zipSync } from 'fflate';
 import type { SlidesImport } from '@/lib/carousels/toSlides';
 import { placementIssues, textIssues, type CheckIssue } from '@/lib/slides/checkLocal';
@@ -223,7 +224,6 @@ export default function SlidesView({
   const previewRef = useRef<HTMLCanvasElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
-  const importRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     slidesRef.current = slides;
@@ -684,22 +684,7 @@ export default function SlidesView({
     replaceSlides(next);
   }
 
-  // --- settings export / import / reset --------------------------------------------
-  function exportSettings() {
-    const blob = new Blob([JSON.stringify(settings, null, 2)], { type: 'application/json' });
-    triggerDownload(blob, 'samspy-slides-settings.json');
-  }
-
-  async function importSettings(file: File | undefined) {
-    if (!file) return;
-    try {
-      setSettings(sanitizeSettings(JSON.parse(await file.text())));
-      flash('Настройки импортированы.');
-    } catch {
-      flash('Не удалось прочитать файл настроек.');
-    }
-  }
-
+  // --- settings reset --------------------------------------------
   function resetSettings() {
     // keep prompt / model (used by «Размножение» as its defaults), reset the rest
     setSettings((s) => ({ ...DEFAULT_SETTINGS, prompt: s.prompt, modelId: s.modelId, size: s.size, quality: s.quality }));
@@ -746,25 +731,9 @@ export default function SlidesView({
       {/* toolbar */}
       <div className="mb-4 flex flex-wrap items-center justify-end gap-4 text-sm">
         {notice && <span className="mr-auto text-xs text-muted">{notice}</span>}
-        <button onClick={exportSettings} className="text-muted hover:text-gray-900">
-          Экспорт настроек
-        </button>
-        <button onClick={() => importRef.current?.click()} className="text-muted hover:text-gray-900">
-          Импорт
-        </button>
         <button onClick={resetSettings} className="text-muted hover:text-gray-900">
           Сбросить настройки
         </button>
-        <input
-          ref={importRef}
-          type="file"
-          accept="application/json,.json"
-          className="hidden"
-          onChange={(e) => {
-            void importSettings(e.target.files?.[0]);
-            e.target.value = '';
-          }}
-        />
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
