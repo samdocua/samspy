@@ -2,6 +2,10 @@
 //   POST /api/slides/check   body: { image: dataURL (jpeg), text: string }
 //     -> { status: 'ok'|'warn'|'fail', issues: [{type, severity, message}], model }
 //
+//   mode 'photo' («Размножение»): body { mode: 'photo', image, reference? }
+//     Only the photo is checked (no caption). With `reference` (the original photo)
+//     Claude also compares the copy with it: invented / removed / broken structures.
+//
 // Claude looks at the rendered slide and reports: unreadable / cut text, text over
 // faces or the main subject, garbage or typos in the text, AI artifacts in the photo
 // (garbled signs, distorted people, broken architecture). Messages are in Russian.
@@ -9,6 +13,8 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-19) — initial check (Haiku by default, SLIDES_CHECK_MODEL override).
+//   v0.2.0 (2026-11-20) — mode 'photo' for «Размножение»: photo-only AI-artifact check,
+//                         optional reference photo for comparison (type 'scene_change').
 
 import { NextResponse } from 'next/server';
 
@@ -39,7 +45,41 @@ Severity: "fail" only for serious problems (caption unreadable or cut off, obvio
 Answer with ONLY this JSON, no other text. Write every "message" in Russian, short (max 20 words), with a concrete hint when possible:
 {"status":"ok"|"warn"|"fail","issues":[{"type":"overflow|readability|covers_subject|text|photo_artifact|other","severity":"warn|fail","message":"..."}]}`;
 
-const TYPES = new Set(['overflow', 'readability', 'covers_subject', 'text', 'photo_artifact', 'other']);
+const PHOTO_PROMPT = (withReference: boolean) => `${
+  withReference
+    ? 'Image 1 is the ORIGINAL photo. Image 2 is an AI-generated copy of it: it should look like a new real phone shot of the same place, with a small camera change (a step left/right, slight zoom, slightly different moment).'
+    : 'The image is an AI-generated photo that should look like a real phone shot.'
+}
+
+Check ${withReference ? 'Image 2 (the copy) ONLY' : 'the image'} for anything that makes it look AI-generated rather than a real photo:
+1. photo_artifact — garbled, fake or misspelled lettering on signs, screens, plates and labels; distorted faces, hands, fingers or bodies; melted, merged or duplicated objects; impossible geometry, broken lines, warped perspective; plastic / over-smoothed textures; obvious seams.${
+  withReference
+    ? `
+2. scene_change — compared with the original: a building, bridge, landmark or major object that is broken, redrawn with different geometry, invented or missing. Text on signs that is readable in the original but garbled in the copy.
+Do NOT report the intended small differences: camera position, zoom, crop, light, and moving things (people, cars, water, clouds) may differ.`
+    : ''
+}
+
+Severity: "fail" only for problems an ordinary viewer would notice on a phone screen and think «this is AI». Small things visible only when zoomed in are "warn". Do not invent problems — if the photo looks real, return no issues.
+
+Answer with ONLY this JSON, no other text. Write every "message" in Russian, short (max 20 words), say WHERE in the frame the problem is:
+{"status":"ok"|"warn"|"fail","issues":[{"type":"photo_artifact|scene_change|other","severity":"warn|fail","message":"..."}]}`;
+
+const TYPES = new Set([
+  'overflow',
+  'readability',
+  'covers_subject',
+  'text',
+  'photo_artifact',
+  'scene_change',
+  'other',
+]);
+
+type ImagePart = { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+const imagePart = (m: RegExpExecArray): ImagePart => ({
+  type: 'image',
+  source: { type: 'base64', media_type: m[1], data: m[2] },
+});
 
 export async function POST(req: Request) {
   const key = process.env.ANTHROPIC_API_KEY;
@@ -54,7 +94,24 @@ export async function POST(req: Request) {
   }
   const m = typeof body?.image === 'string' ? DATA_URL_RE.exec(body.image) : null;
   if (!m) return NextResponse.json({ error: 'Нужна картинка слайда.' }, { status: 400 });
-  const text = typeof body?.text === 'string' ? body.text : '';
+
+  // Build the message: slide mode (default) or photo-only mode.
+  let content: (ImagePart | { type: 'text'; text: string })[];
+  if (body?.mode === 'photo') {
+    const ref = typeof body?.reference === 'string' ? DATA_URL_RE.exec(body.reference) : null;
+    content = ref
+      ? [
+          { type: 'text', text: 'Image 1 — original:' },
+          imagePart(ref),
+          { type: 'text', text: 'Image 2 — AI copy to check:' },
+          imagePart(m),
+          { type: 'text', text: PHOTO_PROMPT(true) },
+        ]
+      : [imagePart(m), { type: 'text', text: PHOTO_PROMPT(false) }];
+  } else {
+    const text = typeof body?.text === 'string' ? body.text : '';
+    content = [imagePart(m), { type: 'text', text: PROMPT(text) }];
+  }
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -66,15 +123,7 @@ export async function POST(req: Request) {
     body: JSON.stringify({
       model: MODEL,
       max_tokens: 600,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } },
-            { type: 'text', text: PROMPT(text) },
-          ],
-        },
-      ],
+      messages: [{ role: 'user', content }],
     }),
     cache: 'no-store',
   });
