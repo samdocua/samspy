@@ -52,6 +52,7 @@
 //                          slides; «Перемешать все», «Другое фото» per slide; folder
 //                          remembered in Chrome/Edge. Groups count as used once slides are
 //                          downloaded («Сбросить память»). Check = text overlay only.
+//   v1.0.1 (2026-11-20) — «×» next to every slide text removes that slide (text + photo).
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -1162,6 +1163,13 @@ export default function SlidesView({
                         placeholder={`Текст слайда ${pad2(i + 1)}`}
                         className={`${inputCls} resize-y ${isActive ? 'border-accent' : ''}`}
                       />
+                      <button
+                        onClick={() => removeSlide(s.id)}
+                        title={`Удалить слайд ${pad2(i + 1)} (текст и фото)`}
+                        className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-edge bg-white text-sm text-muted hover:border-red-300 hover:text-red-600"
+                      >
+                        ×
+                      </button>
                     </div>
                   );
                 })}
