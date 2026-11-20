@@ -29,6 +29,8 @@
 //                         all originals; cost / time estimate with confirmation before big
 //                         batches; progress bar; filter (all / ✕ / errors); warning before
 //                         closing the tab while work is in progress.
+//   v0.4.1 (2026-11-20) — toolbar: «Очистить всё» (photos + copies, asks to confirm when
+//                         ready copies would be lost) and «Сбросить настройки».
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -192,6 +194,7 @@ export default function MultiplyView({ visible = true }: { visible?: boolean }) 
   const [filter, setFilter] = useState<Filter>('all');
   const [pending, setPending] = useState<PendingBatch | null>(null);
   const [priceHint, setPriceHint] = useState<number | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
 
   const copiesRef = useRef<Copy[]>([]);
   const originalsRef = useRef<Original[]>([]);
@@ -363,6 +366,8 @@ export default function MultiplyView({ visible = true }: { visible?: boolean }) 
   }
 
   function clearAll() {
+    setConfirmClear(false);
+    setPending(null);
     replaceCopies([]);
     replaceOriginals([]);
     smallRefCache.current.clear();
@@ -971,9 +976,40 @@ export default function MultiplyView({ visible = true }: { visible?: boolean }) 
 
   return (
     <div>
-      {/* notice + progress */}
+      {/* toolbar + notice + progress */}
       <div className="mb-4 space-y-2">
-        {notice && <p className="text-xs text-muted">{notice}</p>}
+        <div className="flex flex-wrap items-center justify-end gap-4 text-sm">
+          {notice && <span className="mr-auto text-xs text-muted">{notice}</span>}
+          {confirmClear ? (
+            <span className="flex items-center gap-3 text-xs">
+              <span className="text-red-600">Удалить все фото и {readyCount} готовых копий?</span>
+              <button onClick={clearAll} className="rounded-lg bg-red-600 px-3 py-1 font-medium text-white">
+                Удалить
+              </button>
+              <button onClick={() => setConfirmClear(false)} className="text-muted hover:text-gray-900">
+                Отмена
+              </button>
+            </span>
+          ) : (
+            <button
+              onClick={() => (readyCount > 0 ? setConfirmClear(true) : clearAll())}
+              disabled={running || (!originals.length && !copies.length)}
+              className="text-muted hover:text-red-600 disabled:opacity-40"
+            >
+              Очистить всё
+            </button>
+          )}
+          <button
+            onClick={() => {
+              setSettings(defaultsFromSlides());
+              flash('Настройки сброшены (по умолчанию — из «Слайдов»).');
+            }}
+            disabled={running}
+            className="text-muted hover:text-gray-900 disabled:opacity-40"
+          >
+            Сбросить настройки
+          </button>
+        </div>
         {importing && (
           <p className="text-xs text-muted">
             Открываю фото: {importing.done} из {importing.total}…
@@ -1245,11 +1281,6 @@ export default function MultiplyView({ visible = true }: { visible?: boolean }) 
                 e.target.value = '';
               }}
             />
-            {originals.length > 0 && !running && (
-              <button onClick={clearAll} className="mt-2 text-xs text-muted hover:text-red-600">
-                Очистить всё
-              </button>
-            )}
           </div>
 
           <div className="space-y-3 border-t border-edge pt-5">
