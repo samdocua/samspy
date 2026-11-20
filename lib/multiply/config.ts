@@ -8,6 +8,9 @@
 //   v0.1.0 (2026-11-20) — settings (prompt/model/format/size/quality/count/strength),
 //                         first-run defaults from the «Слайды» settings, variation
 //                         lists (min / medium), unique variations per batch.
+//   v0.2.0 (2026-11-20) — autoFix setting; photo check types + fixPrompt for the
+//                         check → fix pipeline.
+//   v0.2.1 (2026-11-20) — PhotoCheck.by (who checked) + note (second opinion skipped / failed).
 
 import {
   ASPECT_RATIOS,
@@ -41,6 +44,7 @@ export interface MultiplySettings {
   quality: GptQuality;
   count: number;
   strength: Strength;
+  autoFix: boolean; // after generation: check the copy and auto-fix serious artifacts
 }
 
 function pick<T extends string>(v: unknown, allowed: readonly T[], d: T): T {
@@ -64,6 +68,7 @@ export function defaultsFromSlides(): MultiplySettings {
     quality: s.quality,
     count: 5,
     strength: 'min',
+    autoFix: true,
   };
 }
 
@@ -83,6 +88,7 @@ export function sanitizeMultiply(raw: unknown, d: MultiplySettings): MultiplySet
     quality: pick(r.quality, GPT_QUALITIES.map((q) => q.id), d.quality),
     count: Number.isFinite(n) ? Math.min(MAX_COUNT, Math.max(MIN_COUNT, Math.round(n))) : d.count,
     strength: pick(r.strength, STRENGTHS.map((x) => x.id), d.strength),
+    autoFix: typeof r.autoFix === 'boolean' ? r.autoFix : d.autoFix,
   };
 }
 
@@ -164,4 +170,38 @@ export function copyPrompt(base: string, variation: string, strength: Strength):
       ? 'Keep the difference subtle: it must look like an almost identical shot of the same scene, taken seconds apart.'
       : 'The difference should be noticeable, but the place, main subject, style and mood stay the same.';
   return `${base.trim()}\n\nThis is one of several copies of the same photo. For this copy: ${variation}. ${tail}`;
+}
+
+// --- check / fix ----------------------------------------------------------------------
+export interface PhotoIssue {
+  type: 'photo_artifact' | 'scene_change' | 'other';
+  severity: 'warn' | 'fail';
+  message: string;
+}
+
+export interface PhotoCheck {
+  status: 'ok' | 'warn' | 'fail';
+  issues: PhotoIssue[];
+  error: string | null; // main (Claude) check failed
+  by: string[]; // checkers that answered: «Claude», «GPT»
+  note: string | null; // second opinion skipped / failed — informational
+}
+
+/** Lower = better: fail = 3, warn = 1; unchecked / failed checks rank last. */
+export function checkScore(c: PhotoCheck | null): number {
+  if (!c || c.error) return 1e6;
+  return c.issues.reduce((n, i) => n + (i.severity === 'fail' ? 3 : 1), 0);
+}
+
+/** Edit prompt for the CURRENT copy: fix only the reported problems, keep the rest. */
+export function fixPrompt(problems: string[]): string {
+  return (
+    'Edit this photo. Keep everything else exactly the same — composition, camera angle, ' +
+    'framing, colors, lighting, people, buildings and objects. Fix ONLY these problems ' +
+    `(reported in Russian): ${problems.map((p) => `«${p}»`).join('; ')}. ` +
+    'All signs, billboards and screens must show either real, correctly spelled text or be ' +
+    'naturally out of focus — no garbled or fake letters. People must have natural anatomy ' +
+    '(faces, hands, fingers). Architecture must keep correct, realistic geometry, the same as ' +
+    'in a real photo of this place. Photorealistic, shot on a phone, no watermark.'
+  );
 }
