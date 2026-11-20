@@ -9,6 +9,8 @@
 //                         texts via Apify + Claude OCR (from the carousels branch).
 //   v0.6.0 (2026-11-19) — «→ В слайды»: carousel texts handed to SlidesView; the
 //                         carousels tab stays mounted so an open job isn't lost.
+//   v0.7.0 (2026-11-20) — «Размножение» tab: one photo → N slightly different AI copies.
+//                         Not tied to a platform (pills hidden), stays mounted.
 'use client';
 
 import { useState } from 'react';
@@ -18,6 +20,7 @@ import TopReelsView from './components/TopReelsView';
 import SearchView from './components/SearchView';
 import SlidesView from './components/SlidesView';
 import CarouselsView from './components/CarouselsView';
+import MultiplyView from './components/MultiplyView';
 import type { SlidesImport } from '@/lib/carousels/toSlides';
 
 async function logout() {
@@ -25,7 +28,10 @@ async function logout() {
   window.location.href = '/login';
 }
 
-type Tab = 'competitors' | 'search' | 'top' | 'carousels' | 'slides';
+type Tab = 'competitors' | 'search' | 'top' | 'carousels' | 'slides' | 'multiply';
+
+// tabs not tied to Instagram / TikTok — the platform pills hide on them
+const PLATFORMLESS: Tab[] = ['slides', 'multiply'];
 
 // platforms: tab shown only for these platforms (omit = all platforms)
 const TABS: { id: Tab; label: string; platforms?: Platform[] }[] = [
@@ -34,6 +40,7 @@ const TABS: { id: Tab; label: string; platforms?: Platform[] }[] = [
   { id: 'top', label: 'Топ' },
   { id: 'carousels', label: 'Карусели', platforms: ['instagram'] },
   { id: 'slides', label: 'Слайды' },
+  { id: 'multiply', label: 'Размножение' },
 ];
 
 const PLATFORMS: { id: Platform; label: string }[] = [
@@ -64,8 +71,8 @@ export default function Home() {
         </button>
       </div>
 
-      {/* platform pills — not shown on the slides tab */}
-      {tab !== 'slides' && (
+      {/* platform pills — not shown on the slides / multiply tabs */}
+      {!PLATFORMLESS.includes(tab) && (
         <div className="mb-5 flex gap-2">
           {PLATFORMS.map((pf) => {
             const active = platform === pf.id;
@@ -126,6 +133,10 @@ export default function Home() {
       {/* slides stays mounted so generated images survive tab switches */}
       <div className={tab === 'slides' ? '' : 'hidden'}>
         <SlidesView visible={tab === 'slides'} incoming={slidesImport} />
+      </div>
+      {/* multiply stays mounted too — copies survive tab switches */}
+      <div className={tab === 'multiply' ? '' : 'hidden'}>
+        <MultiplyView visible={tab === 'multiply'} />
       </div>
     </main>
   );
