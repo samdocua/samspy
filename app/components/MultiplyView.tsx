@@ -31,6 +31,7 @@
 //                         closing the tab while work is in progress.
 //   v0.4.1 (2026-11-20) — toolbar: «Очистить всё» (photos + copies, asks to confirm when
 //                         ready copies would be lost) and «Сбросить настройки».
+//   v0.4.2 (2026-11-20) — inputs / selects one height (ctrlCls, h-10).
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -168,6 +169,8 @@ type GenResult = GenOk | { ok: false; error: string };
 const labelCls = 'mb-1 block text-xs font-medium text-muted';
 const inputCls =
   'w-full rounded-lg border border-edge bg-white px-3 py-2 text-sm outline-none focus:border-accent';
+// inputs + selects: same fixed height (Safari draws number inputs taller than selects)
+const ctrlCls = `${inputCls} h-10 py-0 leading-10`;
 const btnCls = 'rounded-lg border border-edge bg-white px-4 py-2 text-sm font-medium disabled:opacity-40';
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -1295,14 +1298,14 @@ export default function MultiplyView({ visible = true }: { visible?: boolean }) 
                     const n = Math.round(Number(e.target.value));
                     set('count', Number.isFinite(n) ? Math.min(MAX_COUNT, Math.max(MIN_COUNT, n)) : MIN_COUNT);
                   }}
-                  className={inputCls}
+                  className={ctrlCls}
                 />
               </Field>
               <Field label="Изменения">
                 <select
                   value={settings.strength}
                   onChange={(e) => set('strength', e.target.value as MultiplySettings['strength'])}
-                  className={inputCls}
+                  className={ctrlCls}
                 >
                   {STRENGTHS.map((x) => (
                     <option key={x.id} value={x.id}>
@@ -1315,7 +1318,7 @@ export default function MultiplyView({ visible = true }: { visible?: boolean }) 
                 <select
                   value={settings.concurrency}
                   onChange={(e) => set('concurrency', Number(e.target.value))}
-                  className={inputCls}
+                  className={ctrlCls}
                 >
                   {Array.from({ length: MAX_CONCURRENCY }, (_, i) => i + 1).map((n) => (
                     <option key={n} value={n}>
@@ -1349,7 +1352,7 @@ export default function MultiplyView({ visible = true }: { visible?: boolean }) 
 
             <div className="grid grid-cols-3 gap-2">
               <Field label="Модель">
-                <select value={settings.modelId} onChange={(e) => set('modelId', e.target.value)} className={inputCls}>
+                <select value={settings.modelId} onChange={(e) => set('modelId', e.target.value)} className={ctrlCls}>
                   {IMAGE_MODELS.map((m) => (
                     <option key={m.id} value={m.id}>
                       {m.label}
@@ -1361,7 +1364,7 @@ export default function MultiplyView({ visible = true }: { visible?: boolean }) 
                 <select
                   value={settings.aspect}
                   onChange={(e) => set('aspect', e.target.value as MultiplySettings['aspect'])}
-                  className={inputCls}
+                  className={ctrlCls}
                 >
                   {ASPECT_RATIOS.map((r) => (
                     <option key={r} value={r}>
@@ -1374,7 +1377,7 @@ export default function MultiplyView({ visible = true }: { visible?: boolean }) 
                 <select
                   value={settings.size}
                   onChange={(e) => set('size', e.target.value as MultiplySettings['size'])}
-                  className={inputCls}
+                  className={ctrlCls}
                 >
                   {IMAGE_SIZES.map((s) => (
                     <option key={s} value={s}>
@@ -1390,7 +1393,7 @@ export default function MultiplyView({ visible = true }: { visible?: boolean }) 
                 <select
                   value={settings.quality}
                   onChange={(e) => set('quality', e.target.value as MultiplySettings['quality'])}
-                  className={inputCls}
+                  className={ctrlCls}
                 >
                   {GPT_QUALITIES.map((q) => (
                     <option key={q.id} value={q.id}>
