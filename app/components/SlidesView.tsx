@@ -53,6 +53,9 @@
 //                          remembered in Chrome/Edge. Groups count as used once slides are
 //                          downloaded («Сбросить память»). Check = text overlay only.
 //   v1.0.1 (2026-11-20) — «×» next to every slide text removes that slide (text + photo).
+//   v1.0.2 (2026-11-20) — all inputs / selects one height (ctrlCls, h-10); «Сбросить память»
+//                         always shown in the folder block (disabled at 0); toolbar
+//                         «Сбросить» → «Сбросить настройки».
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -178,6 +181,8 @@ function textOptions(s: SlidesSettings, text: string): TextOptions {
 const labelCls = 'mb-1 block text-xs font-medium text-muted';
 const inputCls =
   'w-full rounded-lg border border-edge bg-white px-3 py-2 text-sm outline-none focus:border-accent';
+// inputs + selects: same fixed height (Safari draws number inputs taller than selects)
+const ctrlCls = `${inputCls} h-10 py-0 leading-10`;
 const btnCls = 'rounded-lg border border-edge bg-white px-3 py-1.5 text-xs font-medium disabled:opacity-40';
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -748,7 +753,7 @@ export default function SlidesView({
           Импорт
         </button>
         <button onClick={resetSettings} className="text-muted hover:text-gray-900">
-          Сбросить
+          Сбросить настройки
         </button>
         <input
           ref={importRef}
@@ -939,11 +944,14 @@ export default function SlidesView({
                   <button onClick={() => void chooseFolder()} disabled={picking} className={btnCls}>
                     Другая папка
                   </button>
-                  {usedCount > 0 && (
-                    <button onClick={resetUsed} disabled={picking} className={`${btnCls} text-muted`}>
-                      Сбросить память ({usedCount})
-                    </button>
-                  )}
+                  <button
+                    onClick={resetUsed}
+                    disabled={picking || usedCount === 0}
+                    title="Забыть, какие оригиналы уже были в скачанных каруселях из этой папки"
+                    className={`${btnCls} text-muted`}
+                  >
+                    Сбросить память ({usedCount})
+                  </button>
                 </div>
                 <p className="mt-2 text-muted">
                   На каждом слайде — фото от разного оригинала (1_1, 3_4, 17_2…). Сначала берутся
@@ -1035,7 +1043,7 @@ export default function SlidesView({
                 <select
                   value={settings.aspect}
                   onChange={(e) => set('aspect', e.target.value as SlidesSettings['aspect'])}
-                  className={inputCls}
+                  className={ctrlCls}
                 >
                   {ASPECT_RATIOS.map((r) => (
                     <option key={r} value={r}>
@@ -1052,14 +1060,14 @@ export default function SlidesView({
                   step={0.5}
                   value={settings.textSize}
                   onChange={(e) => set('textSize', Number(e.target.value))}
-                  className={inputCls}
+                  className={ctrlCls}
                 />
               </Field>
               <Field label="Позиция">
                 <select
                   value={settings.textPosition}
                   onChange={(e) => set('textPosition', e.target.value as SlidesSettings['textPosition'])}
-                  className={inputCls}
+                  className={ctrlCls}
                 >
                   {TEXT_POSITIONS.map((p) => (
                     <option key={p.id} value={p.id}>
@@ -1073,7 +1081,7 @@ export default function SlidesView({
               <select
                 value={settings.textStyle}
                 onChange={(e) => set('textStyle', e.target.value as SlidesSettings['textStyle'])}
-                className={inputCls}
+                className={ctrlCls}
               >
                 {TEXT_STYLES.map((s) => (
                   <option key={s.id} value={s.id}>
@@ -1092,7 +1100,7 @@ export default function SlidesView({
                   step={1}
                   value={settings.textOffset}
                   onChange={(e) => set('textOffset', Number(e.target.value))}
-                  className={inputCls}
+                  className={ctrlCls}
                 />
               </Field>
               <Field label="Макс. ширина, %">
@@ -1103,7 +1111,7 @@ export default function SlidesView({
                   step={1}
                   value={settings.textMaxWidth}
                   onChange={(e) => set('textMaxWidth', Number(e.target.value))}
-                  className={inputCls}
+                  className={ctrlCls}
                 />
               </Field>
               <Field label="Наклон, °">
@@ -1114,7 +1122,7 @@ export default function SlidesView({
                   step={1}
                   value={settings.textRotate}
                   onChange={(e) => set('textRotate', Number(e.target.value))}
-                  className={inputCls}
+                  className={ctrlCls}
                 />
               </Field>
               <Field label="Подзаголовок, %">
@@ -1125,7 +1133,7 @@ export default function SlidesView({
                   step={5}
                   value={settings.subtitleSize}
                   onChange={(e) => set('subtitleSize', Number(e.target.value))}
-                  className={inputCls}
+                  className={ctrlCls}
                 />
               </Field>
             </div>
