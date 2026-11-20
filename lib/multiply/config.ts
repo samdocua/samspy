@@ -11,6 +11,8 @@
 //   v0.2.0 (2026-11-20) — autoFix setting; photo check types + fixPrompt for the
 //                         check → fix pipeline.
 //   v0.2.1 (2026-11-20) — PhotoCheck.by (who checked) + note (second opinion skipped / failed).
+//   v0.3.0 (2026-11-20) — batch: MAX_ORIGINALS (100), concurrency setting (1–5, default 5),
+//                         file naming helpers (baseName, uniqueName), Gemini cost hint.
 
 import {
   ASPECT_RATIOS,
@@ -29,6 +31,8 @@ export const SLIDES_STORAGE_KEY = 'samspy.slides.settings.v1'; // same key as Sl
 
 export const MIN_COUNT = 1;
 export const MAX_COUNT = 20;
+export const MAX_ORIGINALS = 100; // photos per tab (one folder upload)
+export const MAX_CONCURRENCY = 5;
 
 export type Strength = 'min' | 'medium';
 export const STRENGTHS: { id: Strength; label: string }[] = [
@@ -45,6 +49,7 @@ export interface MultiplySettings {
   count: number;
   strength: Strength;
   autoFix: boolean; // after generation: check the copy and auto-fix serious artifacts
+  concurrency: number; // generations / checks at once (1–5)
 }
 
 function pick<T extends string>(v: unknown, allowed: readonly T[], d: T): T {
@@ -69,6 +74,7 @@ export function defaultsFromSlides(): MultiplySettings {
     count: 5,
     strength: 'min',
     autoFix: true,
+    concurrency: MAX_CONCURRENCY,
   };
 }
 
@@ -89,6 +95,9 @@ export function sanitizeMultiply(raw: unknown, d: MultiplySettings): MultiplySet
     count: Number.isFinite(n) ? Math.min(MAX_COUNT, Math.max(MIN_COUNT, Math.round(n))) : d.count,
     strength: pick(r.strength, STRENGTHS.map((x) => x.id), d.strength),
     autoFix: typeof r.autoFix === 'boolean' ? r.autoFix : d.autoFix,
+    concurrency: Number.isFinite(Number(r.concurrency))
+      ? Math.min(MAX_CONCURRENCY, Math.max(1, Math.round(Number(r.concurrency))))
+      : d.concurrency,
   };
 }
 
@@ -205,3 +214,26 @@ export function fixPrompt(problems: string[]): string {
     'in a real photo of this place. Photorealistic, shot on a phone, no watermark.'
   );
 }
+
+// --- naming -----------------------------------------------------------------------------
+/** File name without its extension: «IMG_4521.HEIC.jpg» → «IMG_4521.HEIC». */
+export function baseName(fileName: string): string {
+  const n = fileName.split(/[\\/]/).pop() ?? fileName;
+  const dot = n.lastIndexOf('.');
+  const b = (dot > 0 ? n.slice(0, dot) : n).trim();
+  return b || 'photo';
+}
+
+/** «name», then «name (2)», «name (3)»… — not in `taken` (case-insensitive). */
+export function uniqueName(name: string, taken: Set<string>): string {
+  let n = name;
+  let k = 2;
+  while (taken.has(n.toLowerCase())) n = `${name} (${k++})`;
+  taken.add(n.toLowerCase());
+  return n;
+}
+
+// --- cost hint -------------------------------------------------------------------------------
+// Before the first generation there is no real price yet. Gemini: ~1290 image output
+// tokens per picture at the list price (rough); fal: average price per call from the API.
+export const GEMINI_IMAGE_OUT_TOKENS = 1290;
