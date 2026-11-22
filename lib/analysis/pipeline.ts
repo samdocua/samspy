@@ -28,6 +28,9 @@
 //   v0.2.0 (2026-11-22) — quick update (mode 'update', base_job_id).
 //   v0.3.0 (2026-11-22) — stage 2: comments, transcripts / slide texts, AI tags, breakdowns,
 //                         dossier texts; quick update carries AI results + comments over.
+//   v0.3.1 (2026-11-22) — tag: batches of 25, a failed batch is retried in halves, then
+//                         skipped (never stops the step); texts: reels without speech → text
+//                         from the cover frame, carousels without slide links → cover text.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -85,7 +88,7 @@ const TRANSCRIBE_TOP = envNum('ANALYSIS_TRANSCRIBE_TOP', 30, 0, 100);
 const OCR_TOP = envNum('ANALYSIS_OCR_TOP', 10, 0, 40);
 const BREAKDOWN_REELS = envNum('ANALYSIS_BREAKDOWN_REELS', 15, 0, 40);
 const BREAKDOWN_CAROUSELS = envNum('ANALYSIS_BREAKDOWN_CAROUSELS', 5, 0, 20);
-const TAG_BATCH = 40;
+const TAG_BATCH = 25;
 const TEXT_CONCURRENCY = 4;
 const AI_STEPS: AnalysisStatus[] = ['comments', 'texts', 'tag', 'breakdown', 'synth'];
 
@@ -584,7 +587,11 @@ async function stepTexts(sb: SupabaseClient, job: AnalysisJob, deadline: number)
   const ranked = await rankedPosts(sb, job);
   const reels = ranked.filter((p) => p.kind === 'reel').slice(0, TRANSCRIBE_TOP);
   const carousels = ranked.filter((p) => p.kind === 'carousel').slice(0, OCR_TOP);
-  const todo = [...reels, ...carousels].filter((p) => !p.text_done);
+  // to do: never tried, or tried but no text came out and the cover was not read yet
+  const noSpeech = (p: AnalysisPost) => !p.transcript || p.transcript.length < 20;
+  const todo = [...reels, ...carousels].filter(
+    (p) => !p.text_done || (p.ocr_text == null && (p.kind === 'carousel' || noSpeech(p)) && !!p.display_url)
+  );
   if (!todo.length) return false;
 
   let next = 0;
@@ -592,15 +599,23 @@ async function stepTexts(sb: SupabaseClient, job: AnalysisJob, deadline: number)
     while (next < todo.length && Date.now() < deadline) {
       const p = todo[next++];
       const patch: Partial<AnalysisPost> = { text_done: true };
-      try {
-        if (p.kind === 'reel' && p.video_url) {
+      if (p.kind === 'reel' && p.video_url && !p.text_done) {
+        try {
           const t = await transcribe(p.video_url);
           if (t != null) patch.transcript = t;
-        } else if (p.kind === 'carousel' && p.slide_urls.length) {
-          patch.ocr_text = await ocrCarousel(p.slide_urls);
+        } catch {
+          /* expired link / too big */
         }
-      } catch {
-        /* expired link / too big — the post is analysed by its caption */
+      }
+      const speech = patch.transcript ?? p.transcript;
+      // reels with no speech (music + text on screen) and carousels: read the images
+      if (p.kind === 'carousel' || !speech || speech.length < 20) {
+        const urls = p.kind === 'carousel' && p.slide_urls.length ? p.slide_urls : p.display_url ? [p.display_url] : [];
+        try {
+          patch.ocr_text = urls.length ? await ocrCarousel(urls) : '';
+        } catch {
+          patch.ocr_text = ''; // tried — do not loop on it
+        }
       }
       await sb.from('analysis_posts').update(patch).eq('id', p.id);
     }
@@ -635,27 +650,47 @@ async function stepTag(sb: SupabaseClient, job: AnalysisJob, deadline: number): 
 
   const batches: (typeof untagged)[] = [];
   for (let i = 0; i < untagged.length; i += TAG_BATCH) batches.push(untagged.slice(i, i + TAG_BATCH));
-  // 3 batches at a time while the step budget lasts
-  for (let i = 0; i < batches.length && Date.now() < deadline; i += 3) {
+  // 3 batches at a time while the step budget lasts; a failed batch is retried in halves,
+  // posts that still fail are skipped (tagged without tags) so the step never stalls
+  const save = async (batch: typeof untagged, tags: Awaited<ReturnType<typeof tagPosts>>) => {
+    const byCode = new Map(tags.map((t) => [t.sc, t]));
     await Promise.all(
-      batches.slice(i, i + 3).map(async (batch) => {
-        const tags = await tagPosts(batch.map(forAI), job.ai_meta!);
-        const byCode = new Map(tags.map((t) => [t.sc, t]));
-        await Promise.all(
-          batch.map((p) => {
-            const t = byCode.get(p.shortcode);
-            return sb
-              .from('analysis_posts')
-              .update(
-                t
-                  ? { tagged: true, title_ru: t.title, rubric: t.rubric, hook: t.hook, format: t.format, breadth: t.breadth, first_line: t.first_line }
-                  : { tagged: true }
-              )
-              .eq('id', p.id);
-          })
-        );
+      batch.map((p) => {
+        const t = byCode.get(p.shortcode);
+        return sb
+          .from('analysis_posts')
+          .update(
+            t
+              ? { tagged: true, title_ru: t.title, rubric: t.rubric, hook: t.hook, format: t.format, breadth: t.breadth, first_line: t.first_line }
+              : { tagged: true }
+          )
+          .eq('id', p.id);
       })
     );
+  };
+  const run = async (batch: typeof untagged, depth = 0): Promise<void> => {
+    try {
+      const tags = await tagPosts(batch.map(forAI), job.ai_meta!);
+      const got = new Set(tags.map((t) => t.sc));
+      const missing = batch.filter((p) => !got.has(p.shortcode));
+      // posts the model skipped / broke get one more try on their own
+      await save(depth < 2 ? batch.filter((p) => got.has(p.shortcode)) : batch, tags);
+      if (missing.length && depth < 2) await run(missing, depth + 1);
+    } catch (e) {
+      if (depth < 2 && batch.length > 1) {
+        const mid = Math.ceil(batch.length / 2);
+        await run(batch.slice(0, mid), depth + 1);
+        await run(batch.slice(mid), depth + 1);
+      } else {
+        await save(batch, []);
+        const msg = `tag: ${batch.length} пост(ов) без разметки — ${errMsg(e).slice(0, 80)}`;
+        job.ai_error = job.ai_error ? `${job.ai_error} · ${msg}` : msg;
+        await setJob(sb, job.id, { ai_error: job.ai_error });
+      }
+    }
+  };
+  for (let i = 0; i < batches.length && Date.now() < deadline; i += 3) {
+    await Promise.all(batches.slice(i, i + 3).map((b) => run(b)));
   }
   return true; // re-check: more batches may be left
 }

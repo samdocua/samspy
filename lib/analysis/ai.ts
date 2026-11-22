@@ -14,6 +14,9 @@
 //
 // Version history:
 //   v0.3.0 (2026-11-22) — initial (stage 2).
+//   v0.3.1 (2026-11-22) — broken JSON from the model no longer loses a whole batch: complete
+//                         {"sc": …} items are salvaged; prompts ask for «» instead of "" inside
+//                         texts; ocrCarousel() also reads a single cover / reel frame.
 
 import sharp from 'sharp';
 import type { Breakdown, DossierAI, Vocab } from './types';
@@ -60,6 +63,31 @@ function parseJson<T>(answer: string): T {
   if (a < 0 || b <= a) throw new Error(`в ответе модели нет JSON: ${answer.slice(0, 120)}`);
   return JSON.parse(answer.slice(a, b + 1)) as T;
 }
+
+/**
+ * Items of {"items":[{…},…]} even when the JSON is broken or cut off: every complete flat
+ * object that has "sc" is kept.
+ */
+function parseItems<T extends { sc?: unknown }>(answer: string): T[] {
+  try {
+    const { items } = parseJson<{ items?: T[] }>(answer);
+    if (Array.isArray(items)) return items;
+  } catch {
+    /* salvage below */
+  }
+  const out: T[] = [];
+  for (const m of answer.matchAll(/\{[^{}]*"sc"\s*:\s*"[^"]+"[^{}]*\}/g)) {
+    try {
+      out.push(JSON.parse(m[0]) as T);
+    } catch {
+      /* broken object — skip */
+    }
+  }
+  if (!out.length) throw new Error(`не удалось разобрать ответ модели: ${answer.slice(0, 120)}`);
+  return out;
+}
+
+const NO_QUOTES = 'Inside text values never use the " character — use «» for quotes.';
 
 const clip = (s: string | null | undefined, n: number) => {
   const t = (s ?? '').replace(/\s+/g, ' ').trim();
@@ -123,7 +151,7 @@ export async function ocrCarousel(slideUrls: string[]): Promise<string> {
       {
         type: 'text',
         text:
-          'Transcribe the text written on each slide of this Instagram carousel, in the original language, ' +
+          'Transcribe the text written on each image (slides of an Instagram carousel, or a frame of a reel), in the original language, ' +
           'keeping line breaks. Format:\n--- 1 ---\n<text>\n--- 2 ---\n<text>\n…\n' +
           'Skip watermarks and @handles. If a slide has no text, write (без текста). No other words.',
       },
@@ -217,13 +245,13 @@ export async function tagPosts(posts: PostForAI[], vocab: Vocab): Promise<PostTa
 Posts:
 ${posts.map((p) => postLine(p, 400, 500)).join('\n')}
 
-Answer with ONLY this JSON (same ids as in [brackets]):
+Answer with ONLY this JSON (same ids as in [brackets]). ${NO_QUOTES}
 {"items":[{"sc":"...","title":"...","rubric":"...","hook":"...","format":"...","breadth":"широкий","first_line":"..."}]}`,
       },
     ],
     Math.min(8000, 220 * posts.length + 500)
   );
-  const { items } = parseJson<{ items?: PostTags[] }>(answer);
+  const items = parseItems<PostTags>(answer);
   const rubricNames = new Set(vocab.rubrics.map((r) => r.name));
   return (items ?? [])
     .filter((t) => t?.sc)
@@ -271,13 +299,13 @@ For EVERY post write in Russian:
 - why: hypothesis why it beat the median — start with «Гипотеза:», use the numbers given above, do not invent other numbers (2–3 sentences)
 - text_ru: the full text of the post (speech or slides) translated into natural Russian, with line breaks; dialogue lines start with «— ». If it is already Russian, clean it up. If there is no text, an empty string.
 
-Answer with ONLY this JSON:
+Answer with ONLY this JSON. ${NO_QUOTES} Line breaks inside values are written as \\n.
 {"items":[{"sc":"...","structure":"...","payoff":"...","cta":"...","why":"...","text_ru":"..."}]}`,
       },
     ],
     Math.min(12000, 2600 * posts.length)
   );
-  const { items } = parseJson<{ items?: (Breakdown & { sc: string })[] }>(answer);
+  const items = parseItems<Breakdown & { sc: string }>(answer);
   const out: Record<string, Breakdown> = {};
   for (const it of items ?? []) {
     if (!it?.sc) continue;
@@ -316,7 +344,7 @@ Write in Russian:
 - works: «Что залетает» — 3–5 patterns {title (short), text (2–4 sentences with numbers), examples: 2–5 post ids}
 - fails: «Что не залетает» — 2–4 patterns of the weakest posts, same shape
 
-Answer with ONLY this JSON:
+Answer with ONLY this JSON. ${NO_QUOTES}
 {"one_liner":"...","niche_tags":["..."],"about":"...","audience":"...","delivery":"...","sells":[{"type":"...","name":"...","visibility":"...","note":"..."}],"formula":"...","works":[{"title":"...","text":"...","examples":["..."]}],"fails":[{"title":"...","text":"...","examples":["..."]}]}`,
       },
     ],
