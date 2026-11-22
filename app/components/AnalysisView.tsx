@@ -15,6 +15,9 @@
 //                         delivery, what it sells, formula, what works / what doesn't, what
 //                         outliers are made of; posts: titles in Russian, hook / rubric / format /
 //                         breadth tags, filter by hook, «Разбор и текст».
+//   v0.3.1 (2026-11-22) — group bars: «share · ×median · reels N views» — colour and the
+//                         × figure come from the same number (median ratio over all posts
+//                         of the group); views of its reels only as a hint.
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -727,12 +730,18 @@ function GroupBars({
     <div className="space-y-2.5">
       {list.map((g) => (
         <div key={g.name}>
-          <div className="grid grid-cols-[minmax(140px,220px)_1fr_150px] items-center gap-3 text-sm">
-            <span className="truncate">{g.name}</span>
+          <div className="grid grid-cols-[minmax(140px,220px)_1fr_230px] items-center gap-3 text-sm">
+            <span className="truncate" title={g.name}>
+              {g.name}
+            </span>
             <Bar value={g.count} max={max} good={(g.median_ratio ?? 0) >= 1} />
-            <span className="text-right font-mono text-xs text-muted">
-              {showShare ? `${g.share}%` : g.count} · {fmtNum(g.median_metric)}
-              {g.metric_kind === 'likes' ? ' ♥' : ''}
+            <span
+              className="text-right font-mono text-xs text-muted"
+              title="доля (или число постов) · медиана результата постов к медиане аккаунта · медиана просмотров рилсов (лайков, если рилсов нет)"
+            >
+              {showShare ? `${g.share}%` : g.count} ·{' '}
+              <b className={(g.median_ratio ?? 0) >= 1 ? 'text-green-700' : 'text-gray-700'}>{fmtX(g.median_ratio)}</b> ·{' '}
+              {g.metric_kind === 'views' ? `рилсы ${fmtNum(g.median_metric)}` : `${fmtNum(g.median_metric)} ♥`}
             </span>
           </div>
           {showChips && g.top.length > 0 && (
@@ -763,8 +772,9 @@ function AIBody({ d, bySc }: { d: Dossier; bySc: Map<string, PostRow> }) {
             <div className={card}>
               <h4 className="font-bold">Рубрики</h4>
               <p className="mb-4 mt-1 text-sm text-muted">
-                Доля в ленте и медиана {d.stats.reels.count ? 'просмотров' : 'лайков'}. Зелёные — выше медианы аккаунта (
-                {fmtNum(median)}).
+                Доля в ленте · ×медиана: во сколько раз типичный пост рубрики лучше типичного поста аккаунта
+                (рилсы по просмотрам, карусели по лайкам) · медиана просмотров рилсов рубрики (у аккаунта{' '}
+                {fmtNum(median)}). Зелёные — ×1 и выше.
               </p>
               <GroupBars list={d.rubrics} bySc={bySc} />
             </div>
@@ -835,7 +845,9 @@ function AIBody({ d, bySc }: { d: Dossier; bySc: Map<string, PostRow> }) {
       {(d.hooks_top.length > 0 || d.rubrics_top.length > 0) && (
         <section>
           <h3 className="text-2xl font-bold">Из чего состоят залёты</h3>
-          <p className="mb-3 mt-1 text-sm text-muted">Посты от ×2 медианы: сколько их и медиана их результата.</p>
+          <p className="mb-3 mt-1 text-sm text-muted">
+            Посты от ×2 медианы: сколько их · их медиана к медиане аккаунта · медиана просмотров рилсов.
+          </p>
           <div className="grid gap-4 lg:grid-cols-2">
             <div className={card}>
               <h4 className="mb-3 font-bold">Заходы</h4>
