@@ -17,6 +17,8 @@
 //   v0.3.1 (2026-11-22) — broken JSON from the model no longer loses a whole batch: complete
 //                         {"sc": …} items are salvaged; prompts ask for «» instead of "" inside
 //                         texts; ocrCarousel() also reads a single cover / reel frame.
+//   v0.3.2 (2026-11-22) — dossier / breakdown texts mention posts only as [id] (the app turns
+//                         them into «№N» links); × figures rounded.
 
 import sharp from 'sharp';
 import type { Breakdown, DossierAI, Vocab } from './types';
@@ -296,7 +298,7 @@ For EVERY post write in Russian:
 - structure: how it is built from the first second to the end (2–3 sentences)
 - payoff: what the viewer gets at the end, why they share / save it (1–2 sentences)
 - cta: the call to action, quoted; «нет» if there is none
-- why: hypothesis why it beat the median — start with «Гипотеза:», use the numbers given above, do not invent other numbers (2–3 sentences)
+- why: hypothesis why it beat the median — start with «Гипотеза:», use the numbers given above, do not invent other numbers, do not mention post ids (2–3 sentences)
 - text_ru: the full text of the post (speech or slides) translated into natural Russian, with line breaks; dialogue lines start with «— ». If it is already Russian, clean it up. If there is no text, an empty string.
 
 Answer with ONLY this JSON. ${NO_QUOTES} Line breaks inside values are written as \\n.
@@ -328,7 +330,7 @@ export async function synthesize(context: string): Promise<DossierAI> {
     [
       {
         type: 'text',
-        text: `You write a dossier on an Instagram creator for a Russian-speaking content maker who studies competitors. Be concrete, plain, no marketing fluff. Use ONLY the numbers given in the data (shares, medians, ×ratios, counts) — never invent numbers. Refer to posts by their id in [brackets] only inside "examples" arrays.
+        text: `You write a dossier on an Instagram creator for a Russian-speaking content maker who studies competitors. Be concrete, plain, no marketing fluff. Use ONLY the numbers given in the data (shares, medians, ×ratios, counts) — never invent numbers. When a text mentions a specific post, write only its id in square brackets, e.g. [DYZ0i8PCjXa] — the app turns it into a link with the post number; never write ids any other way. Write × figures as in the data (×4,4 or ×1435) and big numbers as «109 тыс», «1,2 млн».
 
 DATA
 ${context}

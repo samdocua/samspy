@@ -20,6 +20,8 @@
 //                         the group); figure = reels views or post likes, whichever dominates.
 //   v0.3.2 (2026-11-22) — «Рубрики» and «Из чего состоят залёты» get tabs: Все / Reels /
 //                         Карусели / Фото (share and figure within that content type).
+//   v0.3.3 (2026-11-22) — post ids written by the model in texts ([DYZ0i8PCjXa]) become
+//                         «№N» links; ×ratios rounded (×4,4 / ×1435).
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -50,7 +52,11 @@ function fmtNum(n: number | null | undefined): string {
 const fmtPct = (n: number | null | undefined, d = 1) =>
   n == null ? '—' : `${n.toLocaleString('ru-RU', { maximumFractionDigits: d })}%`;
 const fmtX = (n: number | null | undefined) =>
-  n == null ? '—' : `×${n.toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
+  n == null
+    ? '—'
+    : n >= 10
+      ? `×${Math.round(n).toLocaleString('ru-RU')}`
+      : `×${n.toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
 const fmtDate = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString('ru-RU') : '—');
 const fmtSec = (n: number | null | undefined) => (n == null ? '—' : `${Math.round(n)} с`);
 const KIND_LABEL: Record<PostKind, string> = { reel: 'Reels', carousel: 'Карусель', photo: 'Фото' };
@@ -709,6 +715,33 @@ function AIHead({ d }: { d: Dossier }) {
   );
 }
 
+/** Text from the model: «[shortcode]» → link «№N» to that post (tooltip — its title). */
+function RichText({ text, bySc }: { text: string; bySc: Map<string, PostRow> }) {
+  const parts = text.split(/(\[[A-Za-z0-9_-]{5,}\])/g);
+  return (
+    <>
+      {parts.map((part, i) => {
+        const m = part.match(/^\[([A-Za-z0-9_-]{5,})\]$/);
+        const p = m ? bySc.get(m[1]) : undefined;
+        if (!m) return <span key={i}>{part}</span>;
+        if (!p) return null; // unknown id — drop it
+        return (
+          <a
+            key={i}
+            href={p.url}
+            target="_blank"
+            rel="noreferrer"
+            title={`${p.title_ru ?? ''} · ${p.kind === 'reel' ? `${fmtNum(p.views)} просм.` : `${fmtNum(p.likes)} лайков`} · ${fmtX(p.ratio)}`}
+            className="font-mono text-green-700 underline decoration-dotted"
+          >
+            №{p.rank}
+          </a>
+        );
+      })}
+    </>
+  );
+}
+
 function PostChip({ p }: { p?: PostRow }) {
   if (!p) return null;
   const label = p.title_ru || (p.caption ?? '').split('\n')[0].slice(0, 50) || p.shortcode;
@@ -825,7 +858,11 @@ function AIBody({ d, bySc }: { d: Dossier; bySc: Map<string, PostRow> }) {
       {(ai?.about || d.rubrics.all.length > 0) && (
         <section className="space-y-4">
           <h3 className="text-2xl font-bold">О чём блог</h3>
-          {ai?.about && <p className="max-w-4xl leading-relaxed">{ai.about}</p>}
+          {ai?.about && (
+            <p className="max-w-4xl leading-relaxed">
+              <RichText text={ai.about} bySc={bySc} />
+            </p>
+          )}
           {d.rubrics.all.length > 0 && (
             <div className={card}>
               <div className="flex flex-wrap items-center gap-3">
@@ -856,12 +893,16 @@ function AIBody({ d, bySc }: { d: Dossier; bySc: Map<string, PostRow> }) {
         <section className="grid gap-4 lg:grid-cols-2">
           <div className={card}>
             <h4 className="mb-2 font-bold">Аудитория</h4>
-            <p className="text-sm leading-relaxed">{ai.audience}</p>
+            <p className="text-sm leading-relaxed">
+              <RichText text={ai.audience} bySc={bySc} />
+            </p>
             <p className="mt-2 text-xs text-muted">Комментариев в выгрузке: {d.comments_count}</p>
           </div>
           <div className={card}>
             <h4 className="mb-2 font-bold">Подача</h4>
-            <p className="text-sm leading-relaxed">{ai.delivery}</p>
+            <p className="text-sm leading-relaxed">
+              <RichText text={ai.delivery} bySc={bySc} />
+            </p>
           </div>
         </section>
       )}
@@ -875,7 +916,9 @@ function AIBody({ d, bySc }: { d: Dossier; bySc: Map<string, PostRow> }) {
                 <p className="font-mono text-xs uppercase tracking-wider text-muted">{x.type}</p>
                 <p className="mt-2 font-bold leading-snug">{x.name}</p>
                 <p className="mt-1 font-mono text-xs">{x.visibility}</p>
-                <p className="mt-2 text-sm text-muted">{x.note}</p>
+                <p className="mt-2 text-sm text-muted">
+                  <RichText text={x.note} bySc={bySc} />
+                </p>
               </div>
             ))}
           </div>
@@ -885,7 +928,9 @@ function AIBody({ d, bySc }: { d: Dossier; bySc: Map<string, PostRow> }) {
       {ai?.formula && (
         <section className="space-y-4">
           <h3 className="text-2xl font-bold">Формула залётов</h3>
-          <p className="max-w-4xl leading-relaxed">{ai.formula}</p>
+          <p className="max-w-4xl leading-relaxed">
+            <RichText text={ai.formula} bySc={bySc} />
+          </p>
           <div className="grid gap-4 lg:grid-cols-2">
             {[
               { title: 'Что залетает', list: ai.works },
@@ -896,7 +941,9 @@ function AIBody({ d, bySc }: { d: Dossier; bySc: Map<string, PostRow> }) {
                 {col.list.map((w, i) => (
                   <div key={i} className={card}>
                     <p className="font-bold">{w.title}</p>
-                    <p className="mt-1 text-sm leading-relaxed">{w.text}</p>
+                    <p className="mt-1 text-sm leading-relaxed">
+                      <RichText text={w.text} bySc={bySc} />
+                    </p>
                     {w.examples?.length > 0 && (
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         {w.examples.slice(0, 5).map((sc) => (

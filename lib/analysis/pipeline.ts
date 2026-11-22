@@ -32,7 +32,7 @@
 //                         skipped (never stops the step); texts: reels without speech → text
 //                         from the cover frame, carousels without slide links → cover text.
 //   v0.3.2 (2026-11-22) — dossier groups per content type (all / reels / carousels / photos);
-//                         dossier texts get rubric stats per format too.
+//                         dossier texts get rubric stats per format too; × figures rounded.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -698,6 +698,10 @@ async function stepTag(sb: SupabaseClient, job: AnalysisJob, deadline: number): 
   return true; // re-check: more batches may be left
 }
 
+/** ×4,4 under 10, ×24 / ×1435 above — how × figures appear in texts. */
+const fmtR = (r: number | null) =>
+  r == null ? '—' : r < 10 ? r.toFixed(1).replace('.', ',') : String(Math.round(r));
+
 const fmtN = (n: number | null) =>
   n == null ? '—' : n >= 1e6 ? `${(n / 1e6).toFixed(2)} млн` : n >= 1e3 ? `${Math.round(n / 1e3)} тыс` : String(Math.round(n));
 
@@ -717,7 +721,7 @@ async function stepBreakdown(sb: SupabaseClient, job: AnalysisJob, deadline: num
       ...forAI(p),
       title: p.title_ru,
       duration: p.duration,
-      metric_label: p.kind === 'reel' ? `${fmtN(p.views)} просмотров` : `${fmtN(p.likes)} лайков`,
+      metric_label: `${p.kind === 'reel' ? `${fmtN(p.views)} просмотров` : `${fmtN(p.likes)} лайков`} (×${fmtR(p.ratio)})`,
       median_label: p.kind === 'reel' ? `${fmtN(s.reels.median)} просмотров` : `${fmtN(s.carousels.median)} лайков`,
     }))
   );
@@ -751,10 +755,10 @@ async function stepSynth(sb: SupabaseClient, job: AnalysisJob): Promise<Analysis
   const breadthTop = groupStats(outliers, (p) => p.breadth, s);
   const g = (list: typeof rubrics) =>
     list
-      .map((x) => `${x.name}: ${x.count} постов (${x.share}%), медиана ${fmtN(x.median_metric)} ${x.metric_kind === 'views' ? 'просм.' : 'лайков'}, ×${x.median_ratio ?? '—'} к медиане аккаунта`)
+      .map((x) => `${x.name}: ${x.count} постов (${x.share}%), медиана ${fmtN(x.median_metric)} ${x.metric_kind === 'views' ? 'просм.' : 'лайков'}, ×${fmtR(x.median_ratio)} к медиане аккаунта`)
       .join('\n');
   const line = (p: (typeof ranked)[number]) =>
-    `[${p.shortcode}] ${p.kind} ${p.posted_at?.slice(0, 10) ?? ''} · ${p.kind === 'reel' ? `${fmtN(p.views)} просм.` : `${fmtN(p.likes)} лайков`} · ×${p.ratio ?? '—'}` +
+    `[${p.shortcode}] ${p.kind} ${p.posted_at?.slice(0, 10) ?? ''} · ${p.kind === 'reel' ? `${fmtN(p.views)} просм.` : `${fmtN(p.likes)} лайков`} · ×${fmtR(p.ratio)}` +
     `${p.duration ? ` · ${Math.round(p.duration)} с` : ''} · ${p.rubric ?? '—'} · заход: ${p.hook ?? '—'} · ${p.format ?? '—'} · ${p.breadth ?? '—'}` +
     `${p.coauthors.length ? ` · коллаб @${p.coauthors.join(', @')}` : ''}${p.has_cta ? ' · есть призыв' : ''}\n  «${p.title_ru ?? ''}» первая фраза: ${p.first_line ?? '—'}` +
     `\n  подпись: ${(p.caption ?? '').replace(/\s+/g, ' ').slice(0, 200)}` +
@@ -768,7 +772,7 @@ async function stepSynth(sb: SupabaseClient, job: AnalysisJob): Promise<Analysis
 ссылка: ${acc?.external_url ?? '—'}
 
 NUMBERS (period ${s.period.from.slice(0, 10)} — ${s.period.to.slice(0, 10)}, ${s.total} posts)
-Reels: ${s.reels.count}, медиана ${fmtN(s.reels.median)} просм., залётов (≥2×) ${s.reels.outliers}, ${s.reels.per_week} в неделю, тренд месяца ×${s.reels.trend ?? '—'}, лайков от просмотров ${s.reels.likes_pct ?? '—'}%, комментов на 1000 просмотров ${s.reels.comments_per_1000 ?? '—'}, медиана длины ${s.reels.median_duration ?? '—'} с (у залётов ${s.reels.outliers_median_duration ?? '—'} с)
+Reels: ${s.reels.count}, медиана ${fmtN(s.reels.median)} просм., залётов (≥2×) ${s.reels.outliers}, ${s.reels.per_week} в неделю, тренд месяца ×${fmtR(s.reels.trend)}, лайков от просмотров ${s.reels.likes_pct ?? '—'}%, комментов на 1000 просмотров ${s.reels.comments_per_1000 ?? '—'}, медиана длины ${s.reels.median_duration ?? '—'} с (у залётов ${s.reels.outliers_median_duration ?? '—'} с)
 Карусели: ${s.carousels.count}, медиана ${fmtN(s.carousels.median)} лайков, залётов ${s.carousels.outliers}, ${s.carousels.per_week} в неделю, медиана слайдов ${s.carousels.median_slides ?? '—'}
 Фото: ${s.photos.count}
 Постов в неделю всего: ${s.per_week}; с призывом в подписи: ${s.cta_pct}%; коллабы: ${s.collab_pct}%; ER: ${s.engagement_pct ?? '—'}%
