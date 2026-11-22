@@ -3,8 +3,21 @@
 // Version history:
 //   v0.1.0 (2026-11-22) — accounts, jobs, posts, computed stats, card summary.
 //   v0.2.0 (2026-11-22) — job mode ('full' | 'update') + base_job_id (migration-007).
+//   v0.3.0 (2026-11-22) — stage 2 (migration-008): AI tags / texts / breakdown per post,
+//                         comments, dossier texts, rubric + hook stats.
 
-export type AnalysisStatus = 'apify' | 'save' | 'thumbs' | 'stats' | 'done' | 'failed';
+export type AnalysisStatus =
+  | 'apify'
+  | 'save'
+  | 'thumbs'
+  | 'stats'
+  | 'comments'
+  | 'texts'
+  | 'tag'
+  | 'breakdown'
+  | 'synth'
+  | 'done'
+  | 'failed';
 export type PostKind = 'reel' | 'carousel' | 'photo';
 export type JobMode = 'full' | 'update';
 
@@ -22,8 +35,39 @@ export interface AnalysisJob {
   stats: AccountStats | null;
   error: string | null;
   locked_until: string | null;
+  comments_run_id: string | null;
+  comments_dataset_id: string | null;
+  ai: DossierAI | null;
+  ai_meta: Vocab | null;
+  ai_error: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface Vocab {
+  rubrics: { name: string; hint: string }[];
+  formats: string[];
+}
+
+export interface DossierAI {
+  one_liner: string;
+  niche_tags: string[];
+  about: string;
+  audience: string;
+  delivery: string;
+  sells: { type: string; name: string; visibility: string; note: string }[];
+  formula: string;
+  works: { title: string; text: string; examples: string[] }[];
+  fails: { title: string; text: string; examples: string[] }[];
+  model: string;
+}
+
+export interface Breakdown {
+  structure: string;
+  payoff: string;
+  cta: string;
+  why: string;
+  text_ru: string;
 }
 
 export interface AnalysisAccount {
@@ -64,6 +108,18 @@ export interface AnalysisPost {
   video_url: string | null;
   thumb_path: string | null;
   thumb_done: boolean;
+  slide_urls: string[];
+  title_ru: string | null;
+  rubric: string | null;
+  hook: string | null;
+  format: string | null;
+  breadth: string | null;
+  first_line: string | null;
+  tagged: boolean;
+  transcript: string | null;
+  ocr_text: string | null;
+  text_done: boolean;
+  breakdown: Breakdown | null;
 }
 
 /** Post as sent to the UI: thumbnail URL + ratio to the account median of its kind. */
@@ -84,6 +140,26 @@ export interface PostRow {
   has_cta: boolean;
   thumb: string | null;
   ratio: number | null; // reels: views ÷ median views; carousels / photos: likes ÷ median likes
+  rank: number; // № by ratio across all posts (1 = best)
+  title_ru: string | null;
+  rubric: string | null;
+  hook: string | null;
+  format: string | null;
+  breadth: string | null;
+  first_line: string | null;
+  has_text: boolean; // transcript / slide text exists
+  breakdown: Breakdown | null;
+}
+
+/** Share of the feed + result of one group (rubric / hook / format). */
+export interface GroupStat {
+  name: string;
+  count: number;
+  share: number; // % of posts in the period
+  median_metric: number | null; // median views of its reels (likes if it has no reels)
+  metric_kind: 'views' | 'likes';
+  median_ratio: number | null;
+  top: string[]; // shortcodes of its best posts
 }
 
 export interface BestPost {
@@ -169,4 +245,11 @@ export interface Dossier {
   job: AnalysisJob;
   stats: AccountStats;
   posts: PostRow[];
+  ai: DossierAI | null;
+  ai_running: boolean;
+  ai_error: string | null;
+  rubrics: GroupStat[]; // all posts
+  hooks_top: GroupStat[]; // among outliers (≥ ×2)
+  rubrics_top: GroupStat[]; // among outliers (≥ ×2)
+  comments_count: number;
 }

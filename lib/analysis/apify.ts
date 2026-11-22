@@ -6,8 +6,11 @@
 //            plays, duration, caption, coauthors.
 // Both runs start together; the job step polls them.
 //
+//   comments: apify~instagram-comment-scraper — comments of the top posts (stage 2).
+//
 // Version history:
 //   v0.1.0 (2026-11-22) — initial.
+//   v0.3.0 (2026-11-22) — comments run; latestComments / slide URLs in the post item.
 
 import { getRun, RUN_FAILED, type ApifyRun } from '@/lib/carousels/apify';
 
@@ -57,6 +60,11 @@ export function startPosts(username: string, from: string): Promise<ApifyRun> {
   });
 }
 
+/** Comments of the given posts (`perPost` each). */
+export function startComments(postUrls: string[], perPost: number): Promise<ApifyRun> {
+  return start('apify~instagram-comment-scraper', { directUrls: postUrls, resultsLimit: perPost });
+}
+
 export async function getDataset<T>(datasetId: string): Promise<T[]> {
   return fetchJson<T[]>(`${API}/datasets/${datasetId}/items?clean=true&format=json&token=${token()}`);
 }
@@ -93,7 +101,8 @@ export interface PostItem {
   displayUrl?: string;
   videoUrl?: string;
   images?: string[];
-  childPosts?: unknown[];
+  childPosts?: { displayUrl?: string; type?: string }[];
+  latestComments?: CommentItem[];
   isPinned?: boolean;
   ownerUsername?: string;
   coauthorProducers?: { username?: string }[];
@@ -107,4 +116,12 @@ export function parseUsername(input: string): string {
   const raw = (m ? m[1] : s.replace(/^@/, '')).toLowerCase();
   if (['p', 'reel', 'reels', 'tv', 'stories', 'explore'].includes(raw)) return '';
   return /^[a-z0-9._]{1,30}$/.test(raw) ? raw : '';
+}
+
+export interface CommentItem {
+  postUrl?: string;
+  text?: string;
+  ownerUsername?: string;
+  likesCount?: number | null;
+  timestamp?: string;
 }

@@ -5,9 +5,17 @@
 //     apify  → wait for both runs
 //     save   → profile → analysis_accounts (+ avatar), posts → analysis_posts
 //     thumbs → post previews → storage bucket 'analysis' (webp, 320 px)
-//     stats  → numbers (lib/analysis/stats) → job.stats + account card summary
+//     stats     → numbers (lib/analysis/stats) → job.stats + account card summary; from here
+//                 the dossier opens with numbers, the AI part fills in while the job goes on
+//     comments  → comments of the top posts (Apify comment scraper) + latestComments of posts
+//     texts     → speech of the top reels (OpenAI), slide text of the top carousels (Claude)
+//     tag       → rubric vocabulary of the account, then per post: title, rubric, hook, format,
+//                 broad / narrow, first phrase (Claude)
+//     breakdown → top posts: structure, pay-off, CTA, why it worked, text in Russian (Claude)
+//     synth     → dossier texts (Claude) from the numbers and groups computed in code
 //     done
-//   Stage 2 will add comments → transcripts → AI dossier before «done».
+//   An AI step that fails does not fail the dossier: the error goes to job.ai_error and the
+//   job moves on (the numbers stay).
 //
 //   mode 'full'   — every post of the last year.
 //   mode 'update' — only posts newer than the latest post of the previous dossier minus
@@ -18,6 +26,8 @@
 // Version history:
 //   v0.1.0 (2026-11-22) — initial (stage 1: collection + numbers).
 //   v0.2.0 (2026-11-22) — quick update (mode 'update', base_job_id).
+//   v0.3.0 (2026-11-22) — stage 2: comments, transcripts / slide texts, AI tags, breakdowns,
+//                         dossier texts; quick update carries AI results + comments over.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -26,12 +36,23 @@ import {
   getRun,
   parseUsername,
   RUN_FAILED,
+  startComments,
   startPosts,
   startProfile,
+  type CommentItem,
   type PostItem,
   type ProfileItem,
 } from './apify';
-import { cardSummary, computeStats, hasCta, ratioOf } from './stats';
+import {
+  breakdownPosts,
+  discoverVocab,
+  ocrCarousel,
+  synthesize,
+  tagPosts,
+  transcribe,
+  type PostForAI,
+} from './ai';
+import { cardSummary, computeStats, groupStats, hasCta, metricOf, ratioOf } from './stats';
 import type {
   AccountCard,
   AnalysisAccount,
@@ -46,22 +67,38 @@ import type {
 
 export const BUCKET = 'analysis';
 const STEP_BUDGET_MS = 40_000;
-const LOCK_MS = 58_000;
+const LOCK_MS = 310_000; // > maxDuration of the step route (300 s): one AI call can be slow
 const THUMB_BATCH = 24;
 const THUMB_CONCURRENCY = 6;
 const THUMB_W = 320;
 const DAY = 86_400_000;
 const YEAR = 365 * DAY;
 export const UPDATE_OVERLAP_DAYS = 14;
+const STEP_HARD_MS = 40_000; // do not start a new AI batch after this
+
+// stage 2 sizes (env overrides)
+const envNum = (k: string, d: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, Number(process.env[k]) || d));
+const COMMENT_POSTS = envNum('ANALYSIS_COMMENT_POSTS', 15, 0, 50);
+const COMMENTS_PER_POST = envNum('ANALYSIS_COMMENTS_PER_POST', 30, 5, 100);
+const TRANSCRIBE_TOP = envNum('ANALYSIS_TRANSCRIBE_TOP', 30, 0, 100);
+const OCR_TOP = envNum('ANALYSIS_OCR_TOP', 10, 0, 40);
+const BREAKDOWN_REELS = envNum('ANALYSIS_BREAKDOWN_REELS', 15, 0, 40);
+const BREAKDOWN_CAROUSELS = envNum('ANALYSIS_BREAKDOWN_CAROUSELS', 5, 0, 20);
+const TAG_BATCH = 40;
+const TEXT_CONCURRENCY = 4;
+const AI_STEPS: AnalysisStatus[] = ['comments', 'texts', 'tag', 'breakdown', 'synth'];
 
 const JOB_COLS =
-  'id,username,status,mode,base_job_id,period_from,profile_run_id,profile_dataset_id,posts_run_id,posts_dataset_id,stats,error,locked_until,created_at,updated_at';
+  'id,username,status,mode,base_job_id,period_from,profile_run_id,profile_dataset_id,posts_run_id,posts_dataset_id,stats,error,locked_until,comments_run_id,comments_dataset_id,ai,ai_meta,ai_error,created_at,updated_at';
 const POST_COLS =
-  'id,job_id,shortcode,url,kind,posted_at,caption,likes,comments,views,duration,slides,is_pinned,coauthors,owner,has_cta,display_url,video_url,thumb_path,thumb_done';
+  'id,job_id,shortcode,url,kind,posted_at,caption,likes,comments,views,duration,slides,is_pinned,coauthors,owner,has_cta,display_url,video_url,thumb_path,thumb_done,slide_urls,title_ru,rubric,hook,format,breadth,first_line,tagged,transcript,ocr_text,text_done,breakdown';
+// AI results of a post — carried over on a quick update
+const AI_FIELDS = ['title_ru', 'rubric', 'hook', 'format', 'breadth', 'first_line', 'tagged', 'transcript', 'ocr_text', 'text_done', 'breakdown'] as const;
 
 const nowIso = () => new Date().toISOString();
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
-const ACTIVE: AnalysisStatus[] = ['apify', 'save', 'thumbs', 'stats'];
+const ACTIVE: AnalysisStatus[] = ['apify', 'save', 'thumbs', 'stats', 'comments', 'texts', 'tag', 'breakdown', 'synth'];
 
 function publicUrl(sb: SupabaseClient, path: string | null, v?: string): string | null {
   if (!path) return null;
@@ -179,16 +216,30 @@ export async function stepAnalysis(sb: SupabaseClient, jobId: string): Promise<b
   try {
     while (Date.now() < deadline && ACTIVE.includes(status)) {
       let next: AnalysisStatus = status;
-      if (status === 'apify') next = await stepApify(sb, job);
-      else if (status === 'save') next = await stepSave(sb, job);
-      else if (status === 'thumbs') next = (await stepThumbs(sb, job)) ? 'thumbs' : 'stats';
-      else if (status === 'stats') next = await stepStats(sb, job);
+      try {
+        if (status === 'apify') next = await stepApify(sb, job);
+        else if (status === 'save') next = await stepSave(sb, job);
+        else if (status === 'thumbs') next = (await stepThumbs(sb, job)) ? 'thumbs' : 'stats';
+        else if (status === 'stats') next = await stepStats(sb, job);
+        else if (status === 'comments') next = await stepComments(sb, job);
+        else if (status === 'texts') next = (await stepTexts(sb, job, deadline)) ? 'texts' : 'tag';
+        else if (status === 'tag') next = (await stepTag(sb, job, deadline)) ? 'tag' : 'breakdown';
+        else if (status === 'breakdown') next = (await stepBreakdown(sb, job, deadline)) ? 'breakdown' : 'synth';
+        else if (status === 'synth') next = await stepSynth(sb, job);
+      } catch (e) {
+        if (!AI_STEPS.includes(status)) throw e;
+        // AI part failed: keep the numbers, note the error, go on to the next AI step
+        const msg = `${status}: ${errMsg(e)}`;
+        job.ai_error = job.ai_error ? `${job.ai_error} · ${msg}` : msg;
+        await setJob(sb, jobId, { ai_error: job.ai_error });
+        next = AI_STEPS[AI_STEPS.indexOf(status) + 1] ?? 'done';
+      }
 
       if (next !== status) {
         await setJob(sb, jobId, { status: next });
         job.status = next;
         status = next;
-      } else if (status === 'apify') {
+      } else if (status === 'apify' || status === 'comments') {
         break; // runs still going on Apify's side
       }
     }
@@ -312,6 +363,10 @@ async function stepSave(sb: SupabaseClient, job: AnalysisJob): Promise<AnalysisS
         has_cta: hasCta(it.caption),
         display_url: it.displayUrl ?? it.images?.[0] ?? null,
         video_url: it.videoUrl ?? null,
+        slide_urls:
+          kind === 'carousel'
+            ? (it.childPosts?.map((c) => c.displayUrl).filter((u): u is string => !!u) ?? it.images ?? []).slice(0, 20)
+            : [],
       };
     });
   for (let i = 0; i < rows.length; i += 300) {
@@ -320,8 +375,33 @@ async function stepSave(sb: SupabaseClient, job: AnalysisJob): Promise<AnalysisS
       .upsert(rows.slice(i, i + 300), { onConflict: 'job_id,shortcode', ignoreDuplicates: true });
     if (error) throw new Error(`Сохранение постов: ${error.message}`);
   }
+  // comments that came with the posts (free) — the audience block uses them
+  const comments = items.flatMap((it) =>
+    (it.latestComments ?? []).map((c) => commentRow(job.id, it.shortCode!, c))
+  );
+  await insertComments(sb, comments);
+
   if (job.mode === 'update' && job.base_job_id) await carryOver(sb, job, seen);
   return 'thumbs';
+}
+
+function commentRow(jobId: string, shortcode: string, c: CommentItem) {
+  return {
+    job_id: jobId,
+    shortcode,
+    text: (c.text ?? '').slice(0, 1000),
+    likes: num(c.likesCount),
+    owner: c.ownerUsername?.toLowerCase() ?? null,
+    posted_at: c.timestamp ?? null,
+  };
+}
+
+async function insertComments(sb: SupabaseClient, rows: ReturnType<typeof commentRow>[]) {
+  const clean = rows.filter((r) => r.text.trim());
+  for (let i = 0; i < clean.length; i += 500) {
+    const { error } = await sb.from('analysis_comments').insert(clean.slice(i, i + 500));
+    if (error) throw new Error(`Сохранение комментариев: ${error.message}`);
+  }
 }
 
 /**
@@ -342,6 +422,31 @@ async function carryOver(sb: SupabaseClient, job: AnalysisJob, fresh: Set<string
       .upsert(rows.slice(i, i + 300), { onConflict: 'job_id,shortcode', ignoreDuplicates: true });
     if (error) throw new Error(`Перенос старых постов: ${error.message}`);
   }
+
+  // re-collected posts keep the AI results of the previous dossier (numbers are fresh)
+  for (const p of old.filter((x) => fresh.has(x.shortcode) && (x.tagged || x.text_done || x.breakdown))) {
+    const patch: Record<string, unknown> = {};
+    for (const k of AI_FIELDS) patch[k] = p[k];
+    await sb.from('analysis_posts').update(patch).eq('job_id', job.id).eq('shortcode', p.shortcode);
+  }
+
+  // comments of the previous dossier (fresh ones of the same posts were added above)
+  const { data: oldComments } = await sb
+    .from('analysis_comments')
+    .select('shortcode,text,likes,owner,posted_at')
+    .eq('job_id', job.base_job_id!)
+    .limit(5000);
+  const have = new Set(
+    ((await sb.from('analysis_comments').select('shortcode,text').eq('job_id', job.id).limit(5000)).data ?? []).map(
+      (c) => `${c.shortcode}|${c.text}`
+    )
+  );
+  await insertComments(
+    sb,
+    (oldComments ?? [])
+      .filter((c) => !have.has(`${c.shortcode}|${c.text}`))
+      .map((c) => ({ ...c, job_id: job.id }))
+  );
 }
 
 /** One batch of previews. Returns true while there is more to do. */
@@ -409,6 +514,250 @@ async function stepStats(sb: SupabaseClient, job: AnalysisJob): Promise<Analysis
     .from('analysis_accounts')
     .update({ last_job_id: job.id, summary: cardSummary(stats), updated_at: nowIso() })
     .eq('username', job.username);
+  job.stats = stats;
+  return 'comments';
+}
+
+// --- stage 2: AI ---------------------------------------------------------------------------
+
+/** Posts of the job with their ratio, best first (pinned posts older than the period skipped). */
+async function rankedPosts(sb: SupabaseClient, job: AnalysisJob): Promise<(AnalysisPost & { ratio: number | null })[]> {
+  const fromMs = new Date(job.period_from).getTime();
+  const posts = await loadPosts(sb, job.id);
+  return posts
+    .filter((p) => !p.posted_at || new Date(p.posted_at).getTime() >= fromMs)
+    .map((p) => ({ ...p, ratio: job.stats ? ratioOf(p, job.stats) : null }))
+    .sort((a, b) => (b.ratio ?? -1) - (a.ratio ?? -1));
+}
+
+const textOf = (p: AnalysisPost) => p.transcript || p.ocr_text || null;
+
+function forAI(p: AnalysisPost & { ratio: number | null }): PostForAI {
+  return { sc: p.shortcode, kind: p.kind, caption: p.caption, text: textOf(p), metric: metricOf(p), ratio: p.ratio };
+}
+
+async function stepComments(sb: SupabaseClient, job: AnalysisJob): Promise<AnalysisStatus> {
+  if (!job.comments_run_id) {
+    if (!COMMENT_POSTS) return 'texts';
+    const ranked = await rankedPosts(sb, job);
+    const { data: have } = await sb.from('analysis_comments').select('shortcode').eq('job_id', job.id).limit(10000);
+    const counts = new Map<string, number>();
+    for (const c of have ?? []) counts.set(c.shortcode, (counts.get(c.shortcode) ?? 0) + 1);
+    const targets = ranked
+      .filter((p) => (p.comments ?? 0) > 0 && (counts.get(p.shortcode) ?? 0) < Math.min(10, COMMENTS_PER_POST))
+      .slice(0, COMMENT_POSTS);
+    if (!targets.length) return 'texts';
+    const run = await startComments(
+      targets.map((p) => p.url),
+      COMMENTS_PER_POST
+    );
+    job.comments_run_id = run.id;
+    job.comments_dataset_id = run.defaultDatasetId;
+    await setJob(sb, job.id, { comments_run_id: run.id, comments_dataset_id: run.defaultDatasetId });
+    return 'comments';
+  }
+  const run = await getRun(job.comments_run_id);
+  if (RUN_FAILED.includes(run.status)) throw new Error(`Apify (комментарии): ${run.status}`);
+  if (run.status !== 'SUCCEEDED') return 'comments';
+
+  const items = await getDataset<CommentItem & { error?: string }>(job.comments_dataset_id!);
+  const posts = await loadPosts(sb, job.id);
+  const byCode = new Map(posts.map((p) => [p.shortcode, p.shortcode]));
+  const scOf = (url?: string) => {
+    const m = (url ?? '').match(/\/(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/);
+    return m ? byCode.get(m[1]) ?? null : null;
+  };
+  const { data: have } = await sb.from('analysis_comments').select('shortcode,text').eq('job_id', job.id).limit(10000);
+  const seen = new Set((have ?? []).map((c) => `${c.shortcode}|${c.text}`));
+  const rows = items
+    .filter((c) => !c.error && c.text)
+    .map((c) => ({ sc: scOf(c.postUrl), c }))
+    .filter((x): x is { sc: string; c: CommentItem } => !!x.sc)
+    .map((x) => commentRow(job.id, x.sc, x.c))
+    .filter((r) => !seen.has(`${r.shortcode}|${r.text}`) && seen.add(`${r.shortcode}|${r.text}`));
+  await insertComments(sb, rows);
+  return 'texts';
+}
+
+/** Speech of the top reels + slide text of the top carousels. true = more to do. */
+async function stepTexts(sb: SupabaseClient, job: AnalysisJob, deadline: number): Promise<boolean> {
+  const ranked = await rankedPosts(sb, job);
+  const reels = ranked.filter((p) => p.kind === 'reel').slice(0, TRANSCRIBE_TOP);
+  const carousels = ranked.filter((p) => p.kind === 'carousel').slice(0, OCR_TOP);
+  const todo = [...reels, ...carousels].filter((p) => !p.text_done);
+  if (!todo.length) return false;
+
+  let next = 0;
+  const worker = async () => {
+    while (next < todo.length && Date.now() < deadline) {
+      const p = todo[next++];
+      const patch: Partial<AnalysisPost> = { text_done: true };
+      try {
+        if (p.kind === 'reel' && p.video_url) {
+          const t = await transcribe(p.video_url);
+          if (t != null) patch.transcript = t;
+        } else if (p.kind === 'carousel' && p.slide_urls.length) {
+          patch.ocr_text = await ocrCarousel(p.slide_urls);
+        }
+      } catch {
+        /* expired link / too big — the post is analysed by its caption */
+      }
+      await sb.from('analysis_posts').update(patch).eq('id', p.id);
+    }
+  };
+  await Promise.all(Array.from({ length: TEXT_CONCURRENCY }, worker));
+  return next < todo.length || todo.length > 0; // re-check on the next round
+}
+
+/** Rubric vocabulary (once per account line), then tags for untagged posts. true = more. */
+async function stepTag(sb: SupabaseClient, job: AnalysisJob, deadline: number): Promise<boolean> {
+  const ranked = await rankedPosts(sb, job);
+  if (!job.ai_meta) {
+    // a quick update keeps the rubrics of the previous dossier, so tags stay comparable
+    let vocab = null;
+    if (job.base_job_id) {
+      const { data } = await sb.from('analysis_jobs').select('ai_meta').eq('id', job.base_job_id).maybeSingle();
+      vocab = data?.ai_meta ?? null;
+    }
+    if (!vocab) {
+      const { data: acc } = await sb.from('analysis_accounts').select('biography').eq('username', job.username).maybeSingle();
+      const top = ranked.slice(0, 60);
+      const rest = ranked.slice(60);
+      const step = Math.max(1, Math.floor(rest.length / 90));
+      const sample = [...top, ...rest.filter((_, i) => i % step === 0).slice(0, 90)];
+      vocab = await discoverVocab(sample.map(forAI), acc?.biography ?? null);
+    }
+    job.ai_meta = vocab;
+    await setJob(sb, job.id, { ai_meta: vocab });
+  }
+  const untagged = ranked.filter((p) => !p.tagged);
+  if (!untagged.length) return false;
+
+  const batches: (typeof untagged)[] = [];
+  for (let i = 0; i < untagged.length; i += TAG_BATCH) batches.push(untagged.slice(i, i + TAG_BATCH));
+  // 3 batches at a time while the step budget lasts
+  for (let i = 0; i < batches.length && Date.now() < deadline; i += 3) {
+    await Promise.all(
+      batches.slice(i, i + 3).map(async (batch) => {
+        const tags = await tagPosts(batch.map(forAI), job.ai_meta!);
+        const byCode = new Map(tags.map((t) => [t.sc, t]));
+        await Promise.all(
+          batch.map((p) => {
+            const t = byCode.get(p.shortcode);
+            return sb
+              .from('analysis_posts')
+              .update(
+                t
+                  ? { tagged: true, title_ru: t.title, rubric: t.rubric, hook: t.hook, format: t.format, breadth: t.breadth, first_line: t.first_line }
+                  : { tagged: true }
+              )
+              .eq('id', p.id);
+          })
+        );
+      })
+    );
+  }
+  return true; // re-check: more batches may be left
+}
+
+const fmtN = (n: number | null) =>
+  n == null ? '—' : n >= 1e6 ? `${(n / 1e6).toFixed(2)} млн` : n >= 1e3 ? `${Math.round(n / 1e3)} тыс` : String(Math.round(n));
+
+/** Top reels + carousels without a breakdown, 3 per call. true = more. */
+async function stepBreakdown(sb: SupabaseClient, job: AnalysisJob, deadline: number): Promise<boolean> {
+  const ranked = await rankedPosts(sb, job);
+  const pick = [
+    ...ranked.filter((p) => p.kind === 'reel').slice(0, BREAKDOWN_REELS),
+    ...ranked.filter((p) => p.kind === 'carousel').slice(0, BREAKDOWN_CAROUSELS),
+  ].filter((p) => !p.breakdown && (p.ratio ?? 0) > 0);
+  if (!pick.length) return false;
+  const s = job.stats!;
+  const batch = pick.slice(0, 3);
+  if (Date.now() > deadline) return true;
+  const result = await breakdownPosts(
+    batch.map((p) => ({
+      ...forAI(p),
+      title: p.title_ru,
+      duration: p.duration,
+      metric_label: p.kind === 'reel' ? `${fmtN(p.views)} просмотров` : `${fmtN(p.likes)} лайков`,
+      median_label: p.kind === 'reel' ? `${fmtN(s.reels.median)} просмотров` : `${fmtN(s.carousels.median)} лайков`,
+    }))
+  );
+  await Promise.all(
+    batch.map((p) =>
+      sb
+        .from('analysis_posts')
+        // empty object = tried; keeps the step from looping on a post the model skipped
+        .update({ breakdown: result[p.shortcode] ?? { structure: '', payoff: '', cta: '', why: '', text_ru: '' } })
+        .eq('id', p.id)
+    )
+  );
+  return pick.length > batch.length;
+}
+
+/** Dossier texts from the numbers / groups computed in code. */
+async function stepSynth(sb: SupabaseClient, job: AnalysisJob): Promise<AnalysisStatus> {
+  const ranked = await rankedPosts(sb, job);
+  const s = job.stats!;
+  const { data: acc } = await sb.from('analysis_accounts').select('*').eq('username', job.username).maybeSingle<AnalysisAccount>();
+  const { data: comments } = await sb
+    .from('analysis_comments')
+    .select('text,likes')
+    .eq('job_id', job.id)
+    .order('likes', { ascending: false, nullsFirst: false })
+    .limit(2000);
+  const outliers = ranked.filter((p) => (p.ratio ?? 0) >= 2);
+  const rubrics = groupStats(ranked, (p) => p.rubric, s);
+  const hooksTop = groupStats(outliers, (p) => p.hook, s);
+  const formats = groupStats(ranked, (p) => p.format, s);
+  const breadthTop = groupStats(outliers, (p) => p.breadth, s);
+  const g = (list: typeof rubrics) =>
+    list
+      .map((x) => `${x.name}: ${x.count} постов (${x.share}%), медиана ${fmtN(x.median_metric)} ${x.metric_kind === 'views' ? 'просм.' : 'лайков'}, ×${x.median_ratio ?? '—'} к медиане аккаунта`)
+      .join('\n');
+  const line = (p: (typeof ranked)[number]) =>
+    `[${p.shortcode}] ${p.kind} ${p.posted_at?.slice(0, 10) ?? ''} · ${p.kind === 'reel' ? `${fmtN(p.views)} просм.` : `${fmtN(p.likes)} лайков`} · ×${p.ratio ?? '—'}` +
+    `${p.duration ? ` · ${Math.round(p.duration)} с` : ''} · ${p.rubric ?? '—'} · заход: ${p.hook ?? '—'} · ${p.format ?? '—'} · ${p.breadth ?? '—'}` +
+    `${p.coauthors.length ? ` · коллаб @${p.coauthors.join(', @')}` : ''}${p.has_cta ? ' · есть призыв' : ''}\n  «${p.title_ru ?? ''}» первая фраза: ${p.first_line ?? '—'}` +
+    `\n  подпись: ${(p.caption ?? '').replace(/\s+/g, ' ').slice(0, 200)}` +
+    (p.breakdown?.why ? `\n  почему залетел: ${p.breakdown.why}` : '');
+  const cms = (comments ?? []).map((c) => c.text.replace(/\s+/g, ' ').slice(0, 160));
+
+  const context = `PROFILE
+@${job.username}${acc?.full_name ? ` (${acc.full_name})` : ''}, ${fmtN(acc?.followers ?? null)} подписчиков, ${acc?.posts_count ?? '—'} публикаций всего
+категория: ${acc?.category ?? '—'}
+био: ${acc?.biography ?? '—'}
+ссылка: ${acc?.external_url ?? '—'}
+
+NUMBERS (period ${s.period.from.slice(0, 10)} — ${s.period.to.slice(0, 10)}, ${s.total} posts)
+Reels: ${s.reels.count}, медиана ${fmtN(s.reels.median)} просм., залётов (≥2×) ${s.reels.outliers}, ${s.reels.per_week} в неделю, тренд месяца ×${s.reels.trend ?? '—'}, лайков от просмотров ${s.reels.likes_pct ?? '—'}%, комментов на 1000 просмотров ${s.reels.comments_per_1000 ?? '—'}, медиана длины ${s.reels.median_duration ?? '—'} с (у залётов ${s.reels.outliers_median_duration ?? '—'} с)
+Карусели: ${s.carousels.count}, медиана ${fmtN(s.carousels.median)} лайков, залётов ${s.carousels.outliers}, ${s.carousels.per_week} в неделю, медиана слайдов ${s.carousels.median_slides ?? '—'}
+Фото: ${s.photos.count}
+Постов в неделю всего: ${s.per_week}; с призывом в подписи: ${s.cta_pct}%; коллабы: ${s.collab_pct}%; ER: ${s.engagement_pct ?? '—'}%
+
+RUBRICS (all posts)
+${g(rubrics)}
+
+FORMATS (all posts)
+${g(formats)}
+
+AMONG OUTLIERS (≥ ×2, ${outliers.length} posts) — hooks:
+${g(hooksTop)}
+broad / narrow:
+${g(breadthTop)}
+
+TOP 30 POSTS
+${ranked.slice(0, 30).map(line).join('\n')}
+
+WEAKEST 25 POSTS
+${ranked.filter((p) => p.ratio != null).slice(-25).map(line).join('\n')}
+
+COMMENTS (${cms.length} collected, most liked first; sample)
+${cms.slice(0, 220).map((c) => `- ${c}`).join('\n') || '(no comments)'}`;
+
+  const ai = await synthesize(context);
+  job.ai = ai;
+  await setJob(sb, job.id, { ai });
   return 'done';
 }
 
@@ -419,6 +768,17 @@ async function progressOf(sb: SupabaseClient, job: AnalysisJob): Promise<string 
     return job.mode === 'update' ? 'Apify собирает новые посты…' : 'Apify собирает профиль и посты за год…';
   if (job.status === 'save') return 'Сохраняю посты…';
   if (job.status === 'stats') return 'Считаю цифры…';
+  if (job.status === 'comments') return 'AI-разбор: собираю комментарии…';
+  if (job.status === 'texts') return 'AI-разбор: расшифровываю топовые ролики и карусели…';
+  if (job.status === 'tag') {
+    const [{ count: total }, { count: done }] = await Promise.all([
+      sb.from('analysis_posts').select('id', { count: 'exact', head: true }).eq('job_id', job.id),
+      sb.from('analysis_posts').select('id', { count: 'exact', head: true }).eq('job_id', job.id).eq('tagged', true),
+    ]);
+    return `AI-разбор: размечаю посты ${done ?? 0} из ${total ?? 0}…`;
+  }
+  if (job.status === 'breakdown') return 'AI-разбор: разбираю топовые посты…';
+  if (job.status === 'synth') return 'AI-разбор: пишу досье…';
   if (job.status === 'thumbs') {
     const [{ count: total }, { count: done }] = await Promise.all([
       sb.from('analysis_posts').select('id', { count: 'exact', head: true }).eq('job_id', job.id),
@@ -492,7 +852,17 @@ export async function getDossier(sb: SupabaseClient, username: string): Promise<
     .eq('id', account.last_job_id)
     .maybeSingle<AnalysisJob>();
   if (!job?.stats) return null;
+  const stats = job.stats;
   const posts = await loadPosts(sb, job.id);
+  const fromMs = new Date(stats.period.from).getTime();
+  const inPeriod = posts.filter((p) => !p.posted_at || new Date(p.posted_at).getTime() >= fromMs);
+
+  // № = place by ratio across all posts
+  const ranked = posts
+    .map((p) => ({ sc: p.shortcode, r: ratioOf(p, stats) }))
+    .sort((a, b) => (b.r ?? -1) - (a.r ?? -1));
+  const rankOf = new Map(ranked.map((x, i) => [x.sc, i + 1]));
+
   const rows: PostRow[] = posts.map((p) => ({
     shortcode: p.shortcode,
     url: p.url,
@@ -509,13 +879,36 @@ export async function getDossier(sb: SupabaseClient, username: string): Promise<
     coauthors: p.coauthors,
     has_cta: p.has_cta,
     thumb: publicUrl(sb, p.thumb_path),
-    ratio: ratioOf(p, job.stats!),
+    ratio: ratioOf(p, stats),
+    rank: rankOf.get(p.shortcode) ?? 0,
+    title_ru: p.title_ru,
+    rubric: p.rubric,
+    hook: p.hook,
+    format: p.format,
+    breadth: p.breadth,
+    first_line: p.first_line,
+    has_text: !!(p.transcript || p.ocr_text),
+    breakdown: p.breakdown && (p.breakdown.structure || p.breakdown.text_ru) ? p.breakdown : null,
   }));
+
+  const outliers = inPeriod.filter((p) => (ratioOf(p, stats) ?? 0) >= 2);
+  const { count: commentsCount } = await sb
+    .from('analysis_comments')
+    .select('id', { count: 'exact', head: true })
+    .eq('job_id', job.id);
+
   return {
     account: { ...account, avatar: publicUrl(sb, account.avatar_path, account.updated_at) },
     job,
-    stats: job.stats,
+    stats,
     posts: rows,
+    ai: job.ai,
+    ai_running: ACTIVE.includes(job.status),
+    ai_error: job.ai_error,
+    rubrics: groupStats(inPeriod, (p) => p.rubric, stats),
+    hooks_top: groupStats(outliers, (p) => p.hook, stats),
+    rubrics_top: groupStats(outliers, (p) => p.rubric, stats),
+    comments_count: commentsCount ?? 0,
   };
 }
 

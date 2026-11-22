@@ -7,12 +7,14 @@
 // Version history:
 //   v0.1.0 (2026-11-22) — initial: per-kind stats, trend, CTA / collab share,
 //                         weekday / hour / monthly buckets, card summary, post ratio.
+//   v0.3.0 (2026-11-22) — groupStats(): rubric / hook / format shares and medians.
 
 import type {
   AccountStats,
   AnalysisPost,
   BucketStat,
   CardSummary,
+  GroupStat,
   KindStats,
   MonthStat,
   PostKind,
@@ -213,4 +215,46 @@ export function cardSummary(s: AccountStats): CardSummary {
     trend: main.trend,
     posts: s.total,
   };
+}
+
+/**
+ * Groups posts by a tag (rubric / hook / format): share of the given posts, median views of
+ * its reels (likes when it has no reels), median ratio to the account median, best posts.
+ * Sorted by count.
+ */
+export function groupStats(
+  posts: AnalysisPost[],
+  key: (p: AnalysisPost) => string | null,
+  s: AccountStats,
+  topN = 6
+): GroupStat[] {
+  const groups = new Map<string, AnalysisPost[]>();
+  for (const p of posts) {
+    const k = key(p);
+    if (!k) continue;
+    const list = groups.get(k);
+    if (list) list.push(p);
+    else groups.set(k, [p]);
+  }
+  const total = posts.length || 1;
+  return Array.from(groups.entries())
+    .map(([name, list]): GroupStat => {
+      const reels = list.filter((p) => p.kind === 'reel');
+      const metricKind = reels.length ? 'views' : 'likes';
+      const ratios = list.map((p) => ({ p, r: ratioOf(p, s) }));
+      return {
+        name,
+        count: list.length,
+        share: Math.round((100 * list.length) / total),
+        median_metric: median((reels.length ? reels : list).map(metricOf)),
+        metric_kind: metricKind,
+        median_ratio: median(ratios.map((x) => x.r)),
+        top: ratios
+          .filter((x) => x.r != null)
+          .sort((a, b) => (b.r ?? 0) - (a.r ?? 0))
+          .slice(0, topN)
+          .map((x) => x.p.shortcode),
+      };
+    })
+    .sort((a, b) => b.count - a.count);
 }

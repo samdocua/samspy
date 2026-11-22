@@ -10,13 +10,18 @@
 //   v0.1.0 (2026-11-22) — stage 1: collection + numbers (AI dossier comes in stage 2).
 //   v0.2.0 (2026-11-22) — «Обновить» = quick update (only new posts); «Пересобрать за год» =
 //                         full collection; card buttons always visible.
+//   v0.3.0 (2026-11-22) — stage 2: AI dossier — one-liner + niche tags, «О чём блог» with
+//                         rubrics (share · median, green above the account median), audience,
+//                         delivery, what it sells, formula, what works / what doesn't, what
+//                         outliers are made of; posts: titles in Russian, hook / rubric / format /
+//                         breadth tags, filter by hook, «Разбор и текст».
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AccountCard, AccountStats, Dossier, KindStats, PostKind, PostRow } from '@/lib/analysis/types';
+import type { AccountCard, AccountStats, Dossier, GroupStat, KindStats, PostKind, PostRow } from '@/lib/analysis/types';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const ACTIVE = ['apify', 'save', 'thumbs', 'stats'];
+const ACTIVE = ['apify', 'save', 'thumbs', 'stats', 'comments', 'texts', 'tag', 'breakdown', 'synth'];
 const isActive = (s?: string | null) => !!s && ACTIVE.includes(s);
 
 // --- formatting -----------------------------------------------------------------------
@@ -350,6 +355,7 @@ function DossierView({
   const [dossier, setDossier] = useState<Dossier | null>(null);
   const [error, setError] = useState<string | null>(null);
   const lastJob = card?.last_job_id;
+  const progress = card?.job?.status; // reload when the AI part moves to the next step
 
   useEffect(() => {
     let off = false;
@@ -365,7 +371,7 @@ function DossierView({
     return () => {
       off = true;
     };
-  }, [username, lastJob]);
+  }, [username, lastJob, progress]);
 
   const running = isActive(card?.job?.status);
 
@@ -475,6 +481,8 @@ function DossierBody({ d }: { d: Dossier }) {
         </div>
       </div>
 
+      <AIHead d={d} />
+
       {/* tiles — reels */}
       {s.reels.count > 0 && (
         <section>
@@ -532,14 +540,11 @@ function DossierBody({ d }: { d: Dossier }) {
         <MixBar s={s} />
       </section>
 
+      <AIBody d={d} bySc={bySc} />
+
       <MonthsChart s={s} />
       <TimeCharts s={s} />
       <PostsList posts={d.posts} />
-
-      <p className="rounded-xl border border-dashed border-edge p-4 text-sm text-muted">
-        Скоро здесь появится AI-разбор: о чём блог, рубрики, аудитория по комментариям, подача, что продаёт,
-        формула залётов, разбор и текст топовых роликов.
-      </p>
     </>
   );
 }
@@ -662,13 +667,204 @@ function TimeCharts({ s }: { s: AccountStats }) {
   );
 }
 
+// --- AI dossier ------------------------------------------------------------------------------------
+function AIHead({ d }: { d: Dossier }) {
+  if (!d.ai) {
+    return (
+      <div className="rounded-xl border border-dashed border-edge p-4 text-sm text-muted">
+        {d.ai_running
+          ? 'AI-разбор в работе: комментарии → расшифровка топовых роликов → разметка постов → разборы → досье. Цифры ниже уже готовы.'
+          : d.ai_error
+            ? `AI-разбор не получился: ${d.ai_error}. Цифры ниже готовы — попробуй «Пересобрать за год».`
+            : 'AI-разбора для этого досье нет — нажми «↻ Обновить».'}
+      </div>
+    );
+  }
+  return (
+    <div>
+      <p className="text-2xl font-semibold leading-snug">{d.ai.one_liner}</p>
+      <div className="mt-3 flex flex-wrap gap-2 text-sm">
+        {d.ai.niche_tags.map((t, i) => (
+          <span key={t} className={`rounded-full px-3 py-1 ${i === 0 ? 'bg-green-50 text-green-800' : 'border border-edge bg-white'}`}>
+            {t}
+          </span>
+        ))}
+      </div>
+      {d.ai_error && <p className="mt-2 text-xs text-amber-600">Часть разбора не получилась: {d.ai_error}</p>}
+    </div>
+  );
+}
+
+function PostChip({ p }: { p?: PostRow }) {
+  if (!p) return null;
+  const label = p.title_ru || (p.caption ?? '').split('\n')[0].slice(0, 50) || p.shortcode;
+  return (
+    <a
+      href={p.url}
+      target="_blank"
+      rel="noreferrer"
+      title={`${p.kind === 'reel' ? `${fmtNum(p.views)} просм.` : `${fmtNum(p.likes)} лайков`} · ${fmtX(p.ratio)}`}
+      className="rounded-md border border-edge bg-gray-50 px-2 py-1 font-mono text-[12px] text-gray-800 hover:border-accent"
+    >
+      №{p.rank} {label}
+    </a>
+  );
+}
+
+function GroupBars({
+  list,
+  bySc,
+  showChips = true,
+  showShare = true,
+}: {
+  list: GroupStat[];
+  bySc: Map<string, PostRow>;
+  showChips?: boolean;
+  showShare?: boolean;
+}) {
+  const max = Math.max(1, ...list.map((g) => g.count));
+  return (
+    <div className="space-y-2.5">
+      {list.map((g) => (
+        <div key={g.name}>
+          <div className="grid grid-cols-[minmax(140px,220px)_1fr_150px] items-center gap-3 text-sm">
+            <span className="truncate">{g.name}</span>
+            <Bar value={g.count} max={max} good={(g.median_ratio ?? 0) >= 1} />
+            <span className="text-right font-mono text-xs text-muted">
+              {showShare ? `${g.share}%` : g.count} · {fmtNum(g.median_metric)}
+              {g.metric_kind === 'likes' ? ' ♥' : ''}
+            </span>
+          </div>
+          {showChips && g.top.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap gap-1.5 pl-1">
+              {g.top.slice(0, 3).map((sc) => (
+                <PostChip key={sc} p={bySc.get(sc)} />
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const card = 'rounded-2xl border border-edge bg-white p-5';
+
+function AIBody({ d, bySc }: { d: Dossier; bySc: Map<string, PostRow> }) {
+  const ai = d.ai;
+  const median = d.stats.reels.count ? d.stats.reels.median : d.stats.carousels.median;
+  return (
+    <>
+      {(ai?.about || d.rubrics.length > 0) && (
+        <section className="space-y-4">
+          <h3 className="text-2xl font-bold">О чём блог</h3>
+          {ai?.about && <p className="max-w-4xl leading-relaxed">{ai.about}</p>}
+          {d.rubrics.length > 0 && (
+            <div className={card}>
+              <h4 className="font-bold">Рубрики</h4>
+              <p className="mb-4 mt-1 text-sm text-muted">
+                Доля в ленте и медиана {d.stats.reels.count ? 'просмотров' : 'лайков'}. Зелёные — выше медианы аккаунта (
+                {fmtNum(median)}).
+              </p>
+              <GroupBars list={d.rubrics} bySc={bySc} />
+            </div>
+          )}
+        </section>
+      )}
+
+      {ai && (ai.audience || ai.delivery) && (
+        <section className="grid gap-4 lg:grid-cols-2">
+          <div className={card}>
+            <h4 className="mb-2 font-bold">Аудитория</h4>
+            <p className="text-sm leading-relaxed">{ai.audience}</p>
+            <p className="mt-2 text-xs text-muted">Комментариев в выгрузке: {d.comments_count}</p>
+          </div>
+          <div className={card}>
+            <h4 className="mb-2 font-bold">Подача</h4>
+            <p className="text-sm leading-relaxed">{ai.delivery}</p>
+          </div>
+        </section>
+      )}
+
+      {ai && ai.sells.length > 0 && (
+        <section>
+          <h3 className="mb-3 text-2xl font-bold">Что продаёт и как</h3>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {ai.sells.map((x, i) => (
+              <div key={i} className={card}>
+                <p className="font-mono text-xs uppercase tracking-wider text-muted">{x.type}</p>
+                <p className="mt-2 font-bold leading-snug">{x.name}</p>
+                <p className="mt-1 font-mono text-xs">{x.visibility}</p>
+                <p className="mt-2 text-sm text-muted">{x.note}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {ai?.formula && (
+        <section className="space-y-4">
+          <h3 className="text-2xl font-bold">Формула залётов</h3>
+          <p className="max-w-4xl leading-relaxed">{ai.formula}</p>
+          <div className="grid gap-4 lg:grid-cols-2">
+            {[
+              { title: 'Что залетает', list: ai.works },
+              { title: 'Что не залетает', list: ai.fails },
+            ].map((col) => (
+              <div key={col.title} className="space-y-3">
+                <h4 className="text-xl font-bold">{col.title}</h4>
+                {col.list.map((w, i) => (
+                  <div key={i} className={card}>
+                    <p className="font-bold">{w.title}</p>
+                    <p className="mt-1 text-sm leading-relaxed">{w.text}</p>
+                    {w.examples?.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {w.examples.slice(0, 5).map((sc) => (
+                          <PostChip key={sc} p={bySc.get(sc)} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {(d.hooks_top.length > 0 || d.rubrics_top.length > 0) && (
+        <section>
+          <h3 className="text-2xl font-bold">Из чего состоят залёты</h3>
+          <p className="mb-3 mt-1 text-sm text-muted">Посты от ×2 медианы: сколько их и медиана их результата.</p>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className={card}>
+              <h4 className="mb-3 font-bold">Заходы</h4>
+              <GroupBars list={d.hooks_top} bySc={bySc} showChips={false} showShare={false} />
+            </div>
+            <div className={card}>
+              <h4 className="mb-3 font-bold">Темы</h4>
+              <GroupBars list={d.rubrics_top} bySc={bySc} showChips={false} showShare={false} />
+            </div>
+          </div>
+        </section>
+      )}
+    </>
+  );
+}
+
 // --- posts list ---------------------------------------------------------------------------------
 function PostsList({ posts }: { posts: PostRow[] }) {
   const [kind, setKind] = useState<KindFilter>('all');
   const [onlyOutliers, setOnlyOutliers] = useState(false);
   const [sort, setSort] = useState<SortKey>('ratio');
   const [q, setQ] = useState('');
+  const [hook, setHook] = useState<string | null>(null);
   const [limit, setLimit] = useState(50);
+  const hooks = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of posts) if (p.hook) m.set(p.hook, (m.get(p.hook) ?? 0) + 1);
+    return Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
+  }, [posts]);
 
   const counts = useMemo(
     () => ({
@@ -693,9 +889,16 @@ function PostsList({ posts }: { posts: PostRow[] }) {
     return posts
       .filter((p) => kind === 'all' || p.kind === kind)
       .filter((p) => !onlyOutliers || (p.ratio ?? 0) >= 2)
-      .filter((p) => !needle || (p.caption ?? '').toLowerCase().includes(needle))
+      .filter((p) => !hook || p.hook === hook)
+      .filter(
+        (p) =>
+          !needle ||
+          (p.caption ?? '').toLowerCase().includes(needle) ||
+          (p.title_ru ?? '').toLowerCase().includes(needle) ||
+          (p.first_line ?? '').toLowerCase().includes(needle)
+      )
       .sort((a, b) => key[sort](b) - key[sort](a));
-  }, [posts, kind, onlyOutliers, sort, q]);
+  }, [posts, kind, onlyOutliers, sort, q, hook]);
 
   return (
     <section>
@@ -734,10 +937,29 @@ function PostsList({ posts }: { posts: PostRow[] }) {
           <option value="date">по дате</option>
         </select>
       </div>
+      {hooks.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-2 text-sm">
+          <button
+            onClick={() => setHook(null)}
+            className={`rounded-full px-3 py-1.5 ${!hook ? 'bg-gray-900 text-white' : 'border border-edge bg-white text-gray-700'}`}
+          >
+            все заходы
+          </button>
+          {hooks.map(([h, n]) => (
+            <button
+              key={h}
+              onClick={() => setHook(hook === h ? null : h)}
+              className={`rounded-full px-3 py-1.5 ${hook === h ? 'bg-gray-900 text-white' : 'border border-edge bg-white text-gray-700'}`}
+            >
+              {h} <span className="text-xs opacity-60">{n}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="space-y-3">
         {list.slice(0, limit).map((p, i) => (
-          <PostItemRow key={p.shortcode} p={p} n={i + 1} />
+          <PostItemRow key={p.shortcode} p={p} />
         ))}
       </div>
       {list.length > limit && (
@@ -753,58 +975,101 @@ function PostsList({ posts }: { posts: PostRow[] }) {
   );
 }
 
-function PostItemRow({ p, n }: { p: PostRow; n: number }) {
+function PostItemRow({ p }: { p: PostRow }) {
   const [open, setOpen] = useState(false);
   const first = (p.caption ?? '').split('\n').find((l) => l.trim()) ?? '';
-  const title = first.length > 110 ? `${first.slice(0, 110)}…` : first || '(без подписи)';
+  const fallback = first.length > 110 ? `${first.slice(0, 110)}…` : first || '(без подписи)';
+  const title = p.title_ru || fallback;
+  const b = p.breakdown;
+  const tag = 'rounded-full border border-edge px-2.5 py-0.5 text-muted';
   return (
-    <div className="flex gap-4 rounded-xl border border-edge bg-white p-3">
-      <a href={p.url} target="_blank" rel="noreferrer" className="block h-28 w-20 shrink-0 overflow-hidden rounded-lg bg-gray-100">
-        {p.thumb && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={p.thumb} alt="" loading="lazy" className="h-full w-full object-cover" />
-        )}
-      </a>
-      <div className="min-w-0 flex-1">
-        <p className="font-semibold">
-          №{n}. {title}
-        </p>
-        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-          <span className="font-mono font-semibold">
-            {p.kind === 'reel' ? `${fmtNum(p.views)} просм.` : `${fmtNum(p.likes)} лайков`}
-          </span>
-          {p.ratio != null && (
-            <span
-              className={`rounded-full px-2 py-0.5 font-mono text-xs ${
-                p.ratio >= 2 ? 'bg-amber-100 text-amber-800' : p.ratio >= 1 ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-muted'
-              }`}
-            >
-              {fmtX(p.ratio)}
-            </span>
+    <div className="rounded-xl border border-edge bg-white p-4">
+      <div className="flex gap-4">
+        <a href={p.url} target="_blank" rel="noreferrer" className="block h-36 w-24 shrink-0 overflow-hidden rounded-lg bg-gray-100">
+          {p.thumb && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={p.thumb} alt="" loading="lazy" className="h-full w-full object-cover" />
           )}
-          <span className="text-muted">{fmtDate(p.posted_at)}</span>
-          {p.kind === 'reel' && p.duration != null && <span className="text-muted">{fmtSec(p.duration)}</span>}
-          {p.kind === 'carousel' && p.slides != null && <span className="text-muted">{p.slides} слайдов</span>}
-          {p.kind === 'reel' && <span className="text-muted">♥ {fmtNum(p.likes)}</span>}
-          <span className="text-muted">💬 {fmtNum(p.comments)}</span>
-        </div>
-        <div className="mt-1.5 flex flex-wrap gap-1.5 text-[11px]">
-          <span className="rounded-full border border-edge px-2 py-0.5 text-muted">{KIND_LABEL[p.kind]}</span>
-          {p.collab && (
-            <span className="rounded-full border border-edge px-2 py-0.5 text-muted" title={p.coauthors.join(', ')}>
-              коллаб{p.coauthors.length ? `: @${p.coauthors.join(', @')}` : ''}
+        </a>
+        <div className="min-w-0 flex-1">
+          <p className="text-lg font-bold leading-snug">
+            №{p.rank}. {title}
+          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+            <span className="font-mono font-semibold">
+              {p.kind === 'reel' ? fmtNum(p.views) : `${fmtNum(p.likes)} ♥`}
             </span>
-          )}
-          {p.has_cta && <span className="rounded-full border border-edge px-2 py-0.5 text-muted">призыв</span>}
-          {p.is_pinned && <span className="rounded-full border border-edge px-2 py-0.5 text-muted">закреп</span>}
+            {p.ratio != null && (
+              <span
+                className={`rounded-full px-2 py-0.5 font-mono text-xs ${
+                  p.ratio >= 2 ? 'bg-amber-100 text-amber-800' : p.ratio >= 1 ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-muted'
+                }`}
+              >
+                {fmtX(p.ratio)}
+              </span>
+            )}
+            <span className="font-mono text-muted">{fmtDate(p.posted_at)}</span>
+            {p.kind === 'reel' && p.duration != null && <span className="font-mono text-muted">{fmtSec(p.duration)}</span>}
+            {p.kind === 'carousel' && p.slides != null && <span className="text-muted">{p.slides} слайдов</span>}
+            {p.kind === 'reel' && <span className="text-muted">♥ {fmtNum(p.likes)}</span>}
+            <span className="text-muted">💬 {fmtNum(p.comments)}</span>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5 text-[12px]">
+            {p.hook && <span className={tag}>{p.hook}</span>}
+            {p.rubric && <span className={tag}>{p.rubric}</span>}
+            {p.format && <span className={tag}>{p.format}</span>}
+            {p.breadth && <span className={tag}>{p.breadth}</span>}
+            {!p.hook && <span className={tag}>{KIND_LABEL[p.kind]}</span>}
+            {p.collab && (
+              <span className={tag} title={p.coauthors.join(', ')}>
+                коллаб{p.coauthors.length ? `: @${p.coauthors.join(', @')}` : ''}
+              </span>
+            )}
+            {p.has_cta && <span className={tag}>призыв</span>}
+            {p.is_pinned && <span className={tag}>закреп</span>}
+          </div>
+          {p.first_line && <p className="mt-2 text-[15px]">«{p.first_line}»</p>}
         </div>
-        {p.caption && (
-          <button onClick={() => setOpen((o) => !o)} className="mt-2 text-sm text-green-700">
-            {open ? '▾' : '▸'} Подпись
-          </button>
-        )}
-        {open && <p className="mt-1 whitespace-pre-line text-sm text-gray-700">{p.caption}</p>}
       </div>
+
+      {(b || p.caption) && (
+        <button onClick={() => setOpen((o) => !o)} className="mt-3 text-sm font-medium text-green-700">
+          {open ? '▾' : '▸'} {b ? 'Разбор и текст' : 'Подпись'}
+        </button>
+      )}
+      {open && (
+        <div className="mt-2 space-y-3 text-sm">
+          {b && (
+            <>
+              {[
+                ['Структура', b.structure],
+                ['Пэй-офф', b.payoff],
+                ['Призыв', b.cta],
+                ['Почему залетел', b.why],
+              ]
+                .filter(([, v]) => v)
+                .map(([k, v]) => (
+                  <div key={k}>
+                    <p className="font-mono text-[11px] uppercase tracking-wider text-muted">{k}</p>
+                    <p className="leading-relaxed">{v}</p>
+                  </div>
+                ))}
+              {b.text_ru && (
+                <div>
+                  <p className="font-mono text-[11px] uppercase tracking-wider text-muted">Текст по-русски</p>
+                  <p className="mt-1 whitespace-pre-line rounded-lg bg-gray-50 p-3 leading-relaxed">{b.text_ru}</p>
+                </div>
+              )}
+            </>
+          )}
+          {p.caption && (
+            <div>
+              <p className="font-mono text-[11px] uppercase tracking-wider text-muted">Подпись</p>
+              <p className="whitespace-pre-line text-gray-700">{p.caption}</p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

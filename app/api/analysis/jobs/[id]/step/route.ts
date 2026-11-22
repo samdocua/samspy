@@ -5,13 +5,14 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-22) — initial.
+//   v0.3.0 (2026-11-22) — maxDuration 300 (AI steps of stage 2).
 
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase';
 import { getCard, stepAnalysis } from '@/lib/analysis/pipeline';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+export const maxDuration = 300; // one AI call (breakdown / dossier) can take a while
 
 export async function POST(_req: Request, { params }: { params: { id: string } }) {
   const sb = createServiceClient();
