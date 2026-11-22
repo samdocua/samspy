@@ -7,6 +7,7 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-19) — initial hand-off (no CTA).
+//   v0.2.0 (2026-11-22) — optional planItemId: a carousel from «План» (marked done after ZIP).
 
 import { joinSoftBreaks } from './postprocess';
 import type { CarouselPostFull } from './types';
@@ -16,6 +17,7 @@ export interface SlidesImport {
   id: string;
   title: string; // e.g. "@flamingoappreels"
   texts: string[]; // one entry per slide, in order
+  planItemId?: string; // sent from «План»: «Скачать все» in «Слайды» marks it done
 }
 
 export function carouselToSlideTexts(post: CarouselPostFull): string[] {
