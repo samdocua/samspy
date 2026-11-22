@@ -31,6 +31,8 @@
 //   v0.3.1 (2026-11-22) — tag: batches of 25, a failed batch is retried in halves, then
 //                         skipped (never stops the step); texts: reels without speech → text
 //                         from the cover frame, carousels without slide links → cover text.
+//   v0.3.2 (2026-11-22) — dossier groups per content type (all / reels / carousels / photos);
+//                         dossier texts get rubric stats per format too.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -64,6 +66,7 @@ import type {
   AnalysisStatus,
   Dossier,
   JobMode,
+  KindTab,
   PostKind,
   PostRow,
 } from './types';
@@ -773,6 +776,12 @@ Reels: ${s.reels.count}, медиана ${fmtN(s.reels.median)} просм., з�
 RUBRICS (all posts)
 ${g(rubrics)}
 
+RUBRICS — reels only (views)
+${g(groupStats(ranked.filter((p) => p.kind === 'reel'), (p) => p.rubric, s)) || '—'}
+
+RUBRICS — carousels only (likes)
+${g(groupStats(ranked.filter((p) => p.kind === 'carousel'), (p) => p.rubric, s)) || '—'}
+
 FORMATS (all posts)
 ${g(formats)}
 
@@ -940,10 +949,20 @@ export async function getDossier(sb: SupabaseClient, username: string): Promise<
     ai: job.ai,
     ai_running: ACTIVE.includes(job.status),
     ai_error: job.ai_error,
-    rubrics: groupStats(inPeriod, (p) => p.rubric, stats),
-    hooks_top: groupStats(outliers, (p) => p.hook, stats),
-    rubrics_top: groupStats(outliers, (p) => p.rubric, stats),
+    rubrics: byKind(inPeriod, (list) => groupStats(list, (p) => p.rubric, stats)),
+    hooks_top: byKind(outliers, (list) => groupStats(list, (p) => p.hook, stats)),
+    rubrics_top: byKind(outliers, (list) => groupStats(list, (p) => p.rubric, stats)),
     comments_count: commentsCount ?? 0,
+  };
+}
+
+/** Same grouping for all posts and for each content type separately. */
+function byKind<T>(posts: AnalysisPost[], fn: (list: AnalysisPost[]) => T): Record<KindTab, T> {
+  return {
+    all: fn(posts),
+    reel: fn(posts.filter((p) => p.kind === 'reel')),
+    carousel: fn(posts.filter((p) => p.kind === 'carousel')),
+    photo: fn(posts.filter((p) => p.kind === 'photo')),
   };
 }
 

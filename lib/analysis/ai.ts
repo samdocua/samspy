@@ -336,7 +336,7 @@ ${context}
 Write in Russian:
 - one_liner: who this is in one line, like «Американский миллиардер-масштабатор: афоризмы о жизни и бизнесе, зарабатывает на Acquisition.com и Skool» (max 140 characters)
 - niche_tags: 4–7 short tags of the niche / content (e.g. «масштабирование», «нарезки подкастов», «коллабы»)
-- about: «О чём блог» — 4–6 sentences: what the bio promises vs what the posts are really about (use rubric shares), which topics score above / below the account median, the image / persona of the author
+- about: «О чём блог» — 4–6 sentences: what the bio promises vs what the posts are really about (use rubric shares), which topics score above / below the account median — separately for reels and carousels when the account posts both, the image / persona of the author
 - audience: «Аудитория» — who comments, judging ONLY by the comments given (quote 2–3 short typical ones in «»), what they ask, the share of short support comments; say how many comments it is based on and that exact demographics are unknown. If no comments were given, say so in one sentence.
 - delivery: «Подача» — tone, how it is filmed / framed, typical length and posting rhythm (use the numbers)
 - sells: what the author sells / promotes and how: 1–5 items {type: one of «консультации», «курс», «софт», «книга», «сообщество», «продукт», «реклама», «услуги», «другое»; name; visibility: «видна» if posts actively sell it, «слабо» if mentioned sometimes, «не видна» if only in bio / in the frame; note: 1–2 sentences on how}

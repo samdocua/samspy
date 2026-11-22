@@ -18,10 +18,21 @@
 //   v0.3.1 (2026-11-22) — group bars: «share · ×median · main-format figure» — colour and the
 //                         × figure come from the same number (median ratio over all posts of
 //                         the group); figure = reels views or post likes, whichever dominates.
+//   v0.3.2 (2026-11-22) — «Рубрики» and «Из чего состоят залёты» get tabs: Все / Reels /
+//                         Карусели / Фото (share and figure within that content type).
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AccountCard, AccountStats, Dossier, GroupStat, KindStats, PostKind, PostRow } from '@/lib/analysis/types';
+import type {
+  AccountCard,
+  AccountStats,
+  Dossier,
+  GroupStat,
+  KindStats,
+  KindTab,
+  PostKind,
+  PostRow,
+} from '@/lib/analysis/types';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ACTIVE = ['apify', 'save', 'thumbs', 'stats', 'comments', 'texts', 'tag', 'breakdown', 'synth'];
@@ -762,23 +773,80 @@ function GroupBars({
 
 const card = 'rounded-2xl border border-edge bg-white p-5';
 
+const TAB_LABEL: Record<KindTab, string> = { all: 'Все', reel: 'Reels', carousel: 'Карусели', photo: 'Фото' };
+
+/** Tabs Все / Reels / Карусели / Фото — only the types that have posts. */
+function KindTabs({
+  value,
+  onChange,
+  counts,
+}: {
+  value: KindTab;
+  onChange: (k: KindTab) => void;
+  counts: Record<KindTab, number>;
+}) {
+  const tabs = (['all', 'reel', 'carousel', 'photo'] as KindTab[]).filter((k) => k === 'all' || counts[k] > 0);
+  if (tabs.length <= 2) return null; // one content type only — nothing to switch
+  return (
+    <div className="flex gap-1 text-xs">
+      {tabs.map((k) => (
+        <button
+          key={k}
+          onClick={() => onChange(k)}
+          className={`rounded-full px-3 py-1 ${value === k ? 'bg-gray-900 text-white' : 'border border-edge text-muted hover:text-gray-900'}`}
+        >
+          {TAB_LABEL[k]} <span className="opacity-60">{counts[k]}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function AIBody({ d, bySc }: { d: Dossier; bySc: Map<string, PostRow> }) {
   const ai = d.ai;
+  const [rubricTab, setRubricTab] = useState<KindTab>('all');
+  const [topTab, setTopTab] = useState<KindTab>('all');
+  const sum = (list: GroupStat[]) => list.reduce((a, g) => a + g.count, 0);
+  const rubricCounts = {
+    all: sum(d.rubrics.all),
+    reel: sum(d.rubrics.reel),
+    carousel: sum(d.rubrics.carousel),
+    photo: sum(d.rubrics.photo),
+  };
+  const topCounts = {
+    all: sum(d.hooks_top.all),
+    reel: sum(d.hooks_top.reel),
+    carousel: sum(d.hooks_top.carousel),
+    photo: sum(d.hooks_top.photo),
+  };
+  const rubrics = d.rubrics[rubricTab] ?? [];
   return (
     <>
-      {(ai?.about || d.rubrics.length > 0) && (
+      {(ai?.about || d.rubrics.all.length > 0) && (
         <section className="space-y-4">
           <h3 className="text-2xl font-bold">О чём блог</h3>
           {ai?.about && <p className="max-w-4xl leading-relaxed">{ai.about}</p>}
-          {d.rubrics.length > 0 && (
+          {d.rubrics.all.length > 0 && (
             <div className={card}>
-              <h4 className="font-bold">Рубрики</h4>
+              <div className="flex flex-wrap items-center gap-3">
+                <h4 className="mr-auto font-bold">Рубрики</h4>
+                <KindTabs value={rubricTab} onChange={setRubricTab} counts={rubricCounts} />
+              </div>
               <p className="mb-4 mt-1 text-sm text-muted">
-                Доля в ленте · ×медиана: во сколько раз типичный пост рубрики лучше типичного поста аккаунта
-                (рилсы по просмотрам, карусели по лайкам) · типичный результат главного формата рубрики: просмотры
-                рилсов или ♥ лайки каруселей, в скобках — из скольких постов. Зелёные — ×1 и выше.
+                {rubricTab === 'all' ? 'Доля в ленте' : `Доля среди: ${TAB_LABEL[rubricTab].toLowerCase()}`} · ×медиана: во
+                сколько раз типичный пост рубрики лучше типичного {rubricTab === 'all' ? 'поста аккаунта (рилсы по просмотрам, карусели по лайкам)' : `поста этого формата`} ·{' '}
+                {rubricTab === 'reel'
+                  ? 'медиана просмотров'
+                  : rubricTab === 'all'
+                    ? 'результат главного формата рубрики (просмотры или ♥ лайки), в скобках — из скольких постов'
+                    : 'медиана лайков'}
+                . Зелёные — ×1 и выше.
               </p>
-              <GroupBars list={d.rubrics} bySc={bySc} />
+              {rubrics.length ? (
+                <GroupBars list={rubrics} bySc={bySc} />
+              ) : (
+                <p className="text-sm text-muted">Нет размеченных постов этого формата.</p>
+              )}
             </div>
           )}
         </section>
@@ -844,20 +912,32 @@ function AIBody({ d, bySc }: { d: Dossier; bySc: Map<string, PostRow> }) {
         </section>
       )}
 
-      {(d.hooks_top.length > 0 || d.rubrics_top.length > 0) && (
+      {(d.hooks_top.all.length > 0 || d.rubrics_top.all.length > 0) && (
         <section>
-          <h3 className="text-2xl font-bold">Из чего состоят залёты</h3>
+          <div className="flex flex-wrap items-center gap-3">
+            <h3 className="mr-auto text-2xl font-bold">Из чего состоят залёты</h3>
+            <KindTabs value={topTab} onChange={setTopTab} counts={topCounts} />
+          </div>
           <p className="mb-3 mt-1 text-sm text-muted">
-            Посты от ×2 медианы: сколько их · их медиана к медиане аккаунта · медиана просмотров рилсов.
+            Посты от ×2 медианы{topTab === 'all' ? '' : ` (${TAB_LABEL[topTab].toLowerCase()})`}: сколько их · их медиана к
+            медиане · типичный результат.
           </p>
           <div className="grid gap-4 lg:grid-cols-2">
             <div className={card}>
               <h4 className="mb-3 font-bold">Заходы</h4>
-              <GroupBars list={d.hooks_top} bySc={bySc} showChips={false} showShare={false} />
+              {d.hooks_top[topTab]?.length ? (
+                <GroupBars list={d.hooks_top[topTab]} bySc={bySc} showChips={false} showShare={false} />
+              ) : (
+                <p className="text-sm text-muted">Залётов этого формата нет.</p>
+              )}
             </div>
             <div className={card}>
               <h4 className="mb-3 font-bold">Темы</h4>
-              <GroupBars list={d.rubrics_top} bySc={bySc} showChips={false} showShare={false} />
+              {d.rubrics_top[topTab]?.length ? (
+                <GroupBars list={d.rubrics_top[topTab]} bySc={bySc} showChips={false} showShare={false} />
+              ) : (
+                <p className="text-sm text-muted">Залётов этого формата нет.</p>
+              )}
             </div>
           </div>
         </section>

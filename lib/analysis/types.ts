@@ -5,6 +5,7 @@
 //   v0.2.0 (2026-11-22) — job mode ('full' | 'update') + base_job_id (migration-007).
 //   v0.3.0 (2026-11-22) — stage 2 (migration-008): AI tags / texts / breakdown per post,
 //                         comments, dossier texts, rubric + hook stats.
+//   v0.3.2 (2026-11-22) — rubric / hook stats per content type (KindTab).
 
 export type AnalysisStatus =
   | 'apify'
@@ -20,6 +21,7 @@ export type AnalysisStatus =
   | 'failed';
 export type PostKind = 'reel' | 'carousel' | 'photo';
 export type JobMode = 'full' | 'update';
+export type KindTab = 'all' | PostKind;
 
 export interface AnalysisJob {
   id: string;
@@ -249,8 +251,9 @@ export interface Dossier {
   ai: DossierAI | null;
   ai_running: boolean;
   ai_error: string | null;
-  rubrics: GroupStat[]; // all posts
-  hooks_top: GroupStat[]; // among outliers (≥ ×2)
-  rubrics_top: GroupStat[]; // among outliers (≥ ×2)
+  // groups per content type: 'all' = every post, then only reels / carousels / photos
+  rubrics: Record<KindTab, GroupStat[]>; // all posts of the period
+  hooks_top: Record<KindTab, GroupStat[]>; // among outliers (≥ ×2)
+  rubrics_top: Record<KindTab, GroupStat[]>; // among outliers (≥ ×2)
   comments_count: number;
 }
