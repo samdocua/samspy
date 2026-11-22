@@ -8,6 +8,9 @@
 //   v0.1.0 (2026-11-22) — initial: per-kind stats, trend, CTA / collab share,
 //                         weekday / hour / monthly buckets, card summary, post ratio.
 //   v0.3.0 (2026-11-22) — groupStats(): rubric / hook / format shares and medians.
+//   v0.3.1 (2026-11-22) — groupStats(): the metric follows the group's main format (views of
+//                         reels if most of it is reels, else likes of carousels / photos) +
+//                         metric_count (how many posts the figure is from).
 
 import type {
   AccountStats,
@@ -240,14 +243,17 @@ export function groupStats(
   return Array.from(groups.entries())
     .map(([name, list]): GroupStat => {
       const reels = list.filter((p) => p.kind === 'reel');
-      const metricKind = reels.length ? 'views' : 'likes';
+      const others = list.filter((p) => p.kind !== 'reel');
+      const metricKind = reels.length >= others.length ? 'views' : 'likes';
+      const base = metricKind === 'views' ? reels : others;
       const ratios = list.map((p) => ({ p, r: ratioOf(p, s) }));
       return {
         name,
         count: list.length,
         share: Math.round((100 * list.length) / total),
-        median_metric: median((reels.length ? reels : list).map(metricOf)),
+        median_metric: median(base.map(metricOf)),
         metric_kind: metricKind,
+        metric_count: base.length,
         median_ratio: median(ratios.map((x) => x.r)),
         top: ratios
           .filter((x) => x.r != null)

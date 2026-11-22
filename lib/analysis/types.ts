@@ -156,8 +156,9 @@ export interface GroupStat {
   name: string;
   count: number;
   share: number; // % of posts in the period
-  median_metric: number | null; // median views of its reels (likes if it has no reels)
+  median_metric: number | null; // main format: median views of its reels, else median likes
   metric_kind: 'views' | 'likes';
+  metric_count: number; // posts the median is computed from
   median_ratio: number | null;
   top: string[]; // shortcodes of its best posts
 }

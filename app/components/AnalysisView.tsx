@@ -15,9 +15,9 @@
 //                         delivery, what it sells, formula, what works / what doesn't, what
 //                         outliers are made of; posts: titles in Russian, hook / rubric / format /
 //                         breadth tags, filter by hook, «Разбор и текст».
-//   v0.3.1 (2026-11-22) — group bars: «share · ×median · reels N views» — colour and the
-//                         × figure come from the same number (median ratio over all posts
-//                         of the group); views of its reels only as a hint.
+//   v0.3.1 (2026-11-22) — group bars: «share · ×median · main-format figure» — colour and the
+//                         × figure come from the same number (median ratio over all posts of
+//                         the group); figure = reels views or post likes, whichever dominates.
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -737,11 +737,14 @@ function GroupBars({
             <Bar value={g.count} max={max} good={(g.median_ratio ?? 0) >= 1} />
             <span
               className="text-right font-mono text-xs text-muted"
-              title="доля (или число постов) · медиана результата постов к медиане аккаунта · медиана просмотров рилсов (лайков, если рилсов нет)"
+              title="доля (или число постов) · медиана результата постов к медиане аккаунта · медиана главного формата группы: просмотры рилсов или лайки каруселей / фото (в скобках — по скольким постам)"
             >
               {showShare ? `${g.share}%` : g.count} ·{' '}
               <b className={(g.median_ratio ?? 0) >= 1 ? 'text-green-700' : 'text-gray-700'}>{fmtX(g.median_ratio)}</b> ·{' '}
-              {g.metric_kind === 'views' ? `рилсы ${fmtNum(g.median_metric)}` : `${fmtNum(g.median_metric)} ♥`}
+              {g.metric_kind === 'views'
+                ? `рилсы ${fmtNum(g.median_metric)} просм.`
+                : `посты ${fmtNum(g.median_metric)} ♥`}
+              {g.metric_count !== g.count ? ` (${g.metric_count})` : ''}
             </span>
           </div>
           {showChips && g.top.length > 0 && (
@@ -761,7 +764,6 @@ const card = 'rounded-2xl border border-edge bg-white p-5';
 
 function AIBody({ d, bySc }: { d: Dossier; bySc: Map<string, PostRow> }) {
   const ai = d.ai;
-  const median = d.stats.reels.count ? d.stats.reels.median : d.stats.carousels.median;
   return (
     <>
       {(ai?.about || d.rubrics.length > 0) && (
@@ -773,8 +775,8 @@ function AIBody({ d, bySc }: { d: Dossier; bySc: Map<string, PostRow> }) {
               <h4 className="font-bold">Рубрики</h4>
               <p className="mb-4 mt-1 text-sm text-muted">
                 Доля в ленте · ×медиана: во сколько раз типичный пост рубрики лучше типичного поста аккаунта
-                (рилсы по просмотрам, карусели по лайкам) · медиана просмотров рилсов рубрики (у аккаунта{' '}
-                {fmtNum(median)}). Зелёные — ×1 и выше.
+                (рилсы по просмотрам, карусели по лайкам) · типичный результат главного формата рубрики: просмотры
+                рилсов или ♥ лайки каруселей, в скобках — из скольких постов. Зелёные — ×1 и выше.
               </p>
               <GroupBars list={d.rubrics} bySc={bySc} />
             </div>
