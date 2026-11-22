@@ -9,8 +9,15 @@
 //     done
 //   Stage 2 will add comments → transcripts → AI dossier before «done».
 //
+//   mode 'full'   — every post of the last year.
+//   mode 'update' — only posts newer than the latest post of the previous dossier minus
+//                   UPDATE_OVERLAP_DAYS (fresh posts still gain views, their numbers are
+//                   refreshed); older posts of the previous dossier are carried over with
+//                   their previews; posts older than a year drop out.
+//
 // Version history:
 //   v0.1.0 (2026-11-22) — initial (stage 1: collection + numbers).
+//   v0.2.0 (2026-11-22) — quick update (mode 'update', base_job_id).
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -32,6 +39,7 @@ import type {
   AnalysisPost,
   AnalysisStatus,
   Dossier,
+  JobMode,
   PostKind,
   PostRow,
 } from './types';
@@ -42,10 +50,12 @@ const LOCK_MS = 58_000;
 const THUMB_BATCH = 24;
 const THUMB_CONCURRENCY = 6;
 const THUMB_W = 320;
-const YEAR = 365 * 86_400_000;
+const DAY = 86_400_000;
+const YEAR = 365 * DAY;
+export const UPDATE_OVERLAP_DAYS = 14;
 
 const JOB_COLS =
-  'id,username,status,period_from,profile_run_id,profile_dataset_id,posts_run_id,posts_dataset_id,stats,error,locked_until,created_at,updated_at';
+  'id,username,status,mode,base_job_id,period_from,profile_run_id,profile_dataset_id,posts_run_id,posts_dataset_id,stats,error,locked_until,created_at,updated_at';
 const POST_COLS =
   'id,job_id,shortcode,url,kind,posted_at,caption,likes,comments,views,duration,slides,is_pinned,coauthors,owner,has_cta,display_url,video_url,thumb_path,thumb_done';
 
@@ -69,7 +79,11 @@ async function failJob(sb: SupabaseClient, id: string, error: string) {
 
 // --- create -----------------------------------------------------------------------
 
-export async function createAnalysis(sb: SupabaseClient, input: string): Promise<AnalysisJob> {
+export async function createAnalysis(
+  sb: SupabaseClient,
+  input: string,
+  wanted: JobMode = 'update'
+): Promise<AnalysisJob> {
   const username = parseUsername(input);
   if (!username) throw new Error('Не понял аккаунт. Вставь ссылку instagram.com/имя или @имя.');
 
@@ -86,13 +100,45 @@ export async function createAnalysis(sb: SupabaseClient, input: string): Promise
 
   const from = new Date(Date.now() - YEAR);
   const fromDay = from.toISOString().slice(0, 10);
-  const [profile, posts] = await Promise.all([startProfile(username), startPosts(username, fromDay)]);
+
+  // quick update needs a finished dossier to build on; otherwise — full year
+  let mode: JobMode = 'full';
+  let baseJobId: string | null = null;
+  let scrapeFrom = fromDay;
+  if (wanted === 'update') {
+    const { data: acc } = await sb
+      .from('analysis_accounts')
+      .select('last_job_id')
+      .eq('username', username)
+      .maybeSingle<{ last_job_id: string | null }>();
+    if (acc?.last_job_id) {
+      const { data: newest } = await sb
+        .from('analysis_posts')
+        .select('posted_at')
+        .eq('job_id', acc.last_job_id)
+        .eq('is_pinned', false)
+        .not('posted_at', 'is', null)
+        .order('posted_at', { ascending: false })
+        .limit(1)
+        .returns<{ posted_at: string }[]>();
+      if (newest?.[0]) {
+        const since = Math.max(new Date(newest[0].posted_at).getTime() - UPDATE_OVERLAP_DAYS * DAY, from.getTime());
+        mode = 'update';
+        baseJobId = acc.last_job_id;
+        scrapeFrom = new Date(since).toISOString().slice(0, 10);
+      }
+    }
+  }
+
+  const [profile, posts] = await Promise.all([startProfile(username), startPosts(username, scrapeFrom)]);
 
   const { data, error } = await sb
     .from('analysis_jobs')
     .insert({
       username,
       status: 'apify',
+      mode,
+      base_job_id: baseJobId,
       period_from: `${fromDay}T00:00:00.000Z`,
       profile_run_id: profile.id,
       profile_dataset_id: profile.defaultDatasetId,
@@ -229,7 +275,7 @@ async function stepSave(sb: SupabaseClient, job: AnalysisJob): Promise<AnalysisS
 
   // posts
   const items = (await getDataset<PostItem>(job.posts_dataset_id!)).filter((it) => it.shortCode && !it.error);
-  if (!items.length) {
+  if (!items.length && job.mode !== 'update') {
     await failJob(sb, job.id, 'Apify не вернул ни одного поста (аккаунт закрыт или пуст за год).');
     return 'failed';
   }
@@ -274,7 +320,28 @@ async function stepSave(sb: SupabaseClient, job: AnalysisJob): Promise<AnalysisS
       .upsert(rows.slice(i, i + 300), { onConflict: 'job_id,shortcode', ignoreDuplicates: true });
     if (error) throw new Error(`Сохранение постов: ${error.message}`);
   }
+  if (job.mode === 'update' && job.base_job_id) await carryOver(sb, job, seen);
   return 'thumbs';
+}
+
+/**
+ * Quick update: posts of the previous dossier that were not collected again (older than the
+ * overlap window) move into this job with their previews; posts older than the period drop
+ * out (pinned ones stay, like in a full collection).
+ */
+async function carryOver(sb: SupabaseClient, job: AnalysisJob, fresh: Set<string>) {
+  const fromMs = new Date(job.period_from).getTime();
+  const old = await loadPosts(sb, job.base_job_id!);
+  const rows = old
+    .filter((p) => !fresh.has(p.shortcode))
+    .filter((p) => p.is_pinned || !p.posted_at || new Date(p.posted_at).getTime() >= fromMs)
+    .map(({ id: _id, job_id: _job, ...rest }) => ({ ...rest, job_id: job.id, thumb_done: true }));
+  for (let i = 0; i < rows.length; i += 300) {
+    const { error } = await sb
+      .from('analysis_posts')
+      .upsert(rows.slice(i, i + 300), { onConflict: 'job_id,shortcode', ignoreDuplicates: true });
+    if (error) throw new Error(`Перенос старых постов: ${error.message}`);
+  }
 }
 
 /** One batch of previews. Returns true while there is more to do. */
@@ -348,7 +415,8 @@ async function stepStats(sb: SupabaseClient, job: AnalysisJob): Promise<Analysis
 // --- read ------------------------------------------------------------------------------------
 
 async function progressOf(sb: SupabaseClient, job: AnalysisJob): Promise<string | null> {
-  if (job.status === 'apify') return 'Apify собирает профиль и посты за год…';
+  if (job.status === 'apify')
+    return job.mode === 'update' ? 'Apify собирает новые посты…' : 'Apify собирает профиль и посты за год…';
   if (job.status === 'save') return 'Сохраняю посты…';
   if (job.status === 'stats') return 'Считаю цифры…';
   if (job.status === 'thumbs') {
@@ -395,6 +463,7 @@ export async function listCards(sb: SupabaseClient): Promise<AccountCard[]> {
           ? {
               id: j.id,
               status: j.status,
+              mode: j.mode,
               error: j.error,
               progress: ACTIVE.includes(j.status) ? await progressOf(sb, j) : null,
               created_at: j.created_at,

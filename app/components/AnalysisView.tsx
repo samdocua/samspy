@@ -8,6 +8,8 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-22) — stage 1: collection + numbers (AI dossier comes in stage 2).
+//   v0.2.0 (2026-11-22) — «Обновить» = quick update (only new posts); «Пересобрать за год» =
+//                         full collection; card buttons always visible.
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -130,7 +132,7 @@ export default function AnalysisView() {
     };
   }, []);
 
-  async function create(value = input) {
+  async function create(value = input, mode: 'update' | 'full' = 'update') {
     if (!value.trim() || creating) return;
     setCreating(true);
     setNotice(null);
@@ -138,13 +140,17 @@ export default function AnalysisView() {
       const res = await fetch('/api/analysis', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: value }),
+        body: JSON.stringify({ input: value, mode }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
       upsertCard(data.card);
       setInput('');
-      setNotice(`@${data.card.username}: сбор запущен — это займёт несколько минут. Вкладку можно не держать открытой, продолжится при следующем заходе.`);
+      setNotice(
+        data.card.job?.mode === 'update'
+          ? `@${data.card.username}: собираю новые посты — обычно пара минут.`
+          : `@${data.card.username}: сбор за год запущен — это займёт несколько минут. Вкладку можно не держать открытой, продолжится при следующем заходе.`
+      );
     } catch (e) {
       setNotice((e as Error).message);
     } finally {
@@ -165,7 +171,7 @@ export default function AnalysisView() {
         username={openUser}
         card={card}
         onBack={() => setOpenUser(null)}
-        onRefresh={() => void create(openUser)}
+        onRefresh={(mode) => void create(openUser, mode)}
       />
     );
   }
@@ -224,7 +230,7 @@ export default function AnalysisView() {
               key={c.username}
               card={c}
               onOpen={() => setOpenUser(c.username)}
-              onRefresh={() => void create(c.username)}
+              onRefresh={(mode) => void create(c.username, mode)}
               onDelete={() => void remove(c.username)}
             />
           ))}
@@ -243,7 +249,7 @@ function AccountCardView({
 }: {
   card: AccountCard;
   onOpen: () => void;
-  onRefresh: () => void;
+  onRefresh: (mode: 'update' | 'full') => void;
   onDelete: () => void;
 }) {
   const running = isActive(c.job?.status);
@@ -299,13 +305,26 @@ function AccountCardView({
         </div>
       )}
 
-      <div className="absolute right-3 top-3 hidden gap-2 text-xs group-hover:flex" onClick={(e) => e.stopPropagation()}>
+      <div className="mt-3 flex flex-wrap gap-3 border-t border-edge pt-3 text-xs" onClick={(e) => e.stopPropagation()}>
         {!running && (
-          <button onClick={onRefresh} className="rounded border border-edge bg-white px-2 py-0.5 text-muted hover:text-gray-900">
-            Обновить
+          <button
+            onClick={() => onRefresh('update')}
+            title={canOpen ? 'Собрать только новые посты (с запасом 14 дней) и пересчитать цифры' : 'Собрать посты за год'}
+            className="font-medium text-accent hover:underline"
+          >
+            {canOpen ? '↻ Обновить' : failed ? 'Повторить' : ''}
           </button>
         )}
-        <button onClick={onDelete} className="rounded border border-edge bg-white px-2 py-0.5 text-muted hover:text-red-600">
+        {!running && canOpen && (
+          <button
+            onClick={() => onRefresh('full')}
+            title="Заново собрать все посты за год (свежие цифры по всем постам)"
+            className="text-muted hover:text-gray-900"
+          >
+            Пересобрать за год
+          </button>
+        )}
+        <button onClick={onDelete} className="ml-auto text-muted hover:text-red-600">
           Удалить
         </button>
       </div>
@@ -326,7 +345,7 @@ function DossierView({
   username: string;
   card: AccountCard | null;
   onBack: () => void;
-  onRefresh: () => void;
+  onRefresh: (mode: 'update' | 'full') => void;
 }) {
   const [dossier, setDossier] = useState<Dossier | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -363,9 +382,22 @@ function DossierView({
           {running ? (
             <span className="text-xs text-accent">Обновляется: {card?.job?.progress}</span>
           ) : (
-            <button onClick={onRefresh} className="text-muted hover:text-gray-900">
-              Обновить досье
-            </button>
+            <span className="flex gap-4">
+              <button
+                onClick={() => onRefresh('update')}
+                title="Собрать только новые посты (с запасом 14 дней) и пересчитать цифры"
+                className="font-medium text-accent hover:underline"
+              >
+                ↻ Обновить
+              </button>
+              <button
+                onClick={() => onRefresh('full')}
+                title="Заново собрать все посты за год"
+                className="text-muted hover:text-gray-900"
+              >
+                Пересобрать за год
+              </button>
+            </span>
           )}
         </span>
       </div>

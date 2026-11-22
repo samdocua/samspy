@@ -2,14 +2,18 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-22) — accounts, jobs, posts, computed stats, card summary.
+//   v0.2.0 (2026-11-22) — job mode ('full' | 'update') + base_job_id (migration-007).
 
 export type AnalysisStatus = 'apify' | 'save' | 'thumbs' | 'stats' | 'done' | 'failed';
 export type PostKind = 'reel' | 'carousel' | 'photo';
+export type JobMode = 'full' | 'update';
 
 export interface AnalysisJob {
   id: string;
   username: string;
   status: AnalysisStatus;
+  mode: JobMode;
+  base_job_id: string | null;
   period_from: string;
   profile_run_id: string | null;
   profile_dataset_id: string | null;
@@ -149,7 +153,14 @@ export interface AccountCard {
   avatar: string | null;
   summary: CardSummary | null;
   last_job_id: string | null;
-  job: { id: string; status: AnalysisStatus; error: string | null; progress: string | null; created_at: string } | null;
+  job: {
+    id: string;
+    status: AnalysisStatus;
+    mode: JobMode;
+    error: string | null;
+    progress: string | null;
+    created_at: string;
+  } | null;
   updated_at: string;
 }
 

@@ -1,9 +1,11 @@
 // SamSpy — «Анализ» (Instagram account dossiers)
 //   GET  /api/analysis          -> { cards } all analysed accounts (+ latest job status)
-//   POST /api/analysis {input}  -> link / @username → new dossier job (or the running one)
+//   POST /api/analysis {input, mode?}  -> link / @username → new dossier job (or the running one)
+//        mode: 'update' (default — only new posts if a dossier exists) | 'full' (whole year)
 //
 // Version history:
 //   v0.1.0 (2026-11-22) — initial.
+//   v0.2.0 (2026-11-22) — mode: quick update / full re-collection.
 
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase';
@@ -21,7 +23,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  let body: { input?: string };
+  let body: { input?: string; mode?: string };
   try {
     body = await req.json();
   } catch {
@@ -31,7 +33,7 @@ export async function POST(req: Request) {
 
   const sb = createServiceClient();
   try {
-    const job = await createAnalysis(sb, body.input);
+    const job = await createAnalysis(sb, body.input, body.mode === 'full' ? 'full' : 'update');
     return NextResponse.json({ card: await getCard(sb, job.username) });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
