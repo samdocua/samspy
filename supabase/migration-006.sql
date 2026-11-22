@@ -4,7 +4,7 @@
 --   v0.1.0 (2026-11-22) — analysis_accounts (profile + card summary), analysis_jobs
 --                         (Apify runs, step status, computed stats), analysis_posts
 --                         (one row per post of the period, per job), storage bucket
---                         'analysis' for thumbnails / avatars.
+--                         'analysis' for thumbnails / avatars; RLS on (server-only tables).
 --
 -- Apply AFTER migration-005.sql. Paste into the Supabase SQL editor and Run.
 
@@ -76,3 +76,9 @@ create index if not exists idx_analysis_posts_thumb on analysis_posts(job_id, th
 insert into storage.buckets (id, name, public)
 values ('analysis', 'analysis', true)
 on conflict (id) do nothing;
+
+-- only the server (service-role key, bypasses RLS) touches these tables:
+-- RLS on with no policies = closed for the public anon key
+alter table analysis_accounts enable row level security;
+alter table analysis_jobs     enable row level security;
+alter table analysis_posts    enable row level security;
