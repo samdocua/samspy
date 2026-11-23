@@ -3,20 +3,19 @@
 //   create:  sources (dossiers) + accounts + days × per day → plan + one empty item per slot.
 //            Each slot gets a target rubric × hook, drawn from what wins at the sources
 //            (weighted, no rubric twice a day per account, ~20 % exploration), the number of
-//            questions (q_min…q_max) and a comment keyword (cta_words rotated).
+//            questions (q_min…q_max) and a universal CTA text (rotated).
 //   step:    writes the next batch of empty slots (Claude), lock per plan; the open tab keeps
 //            calling it until every slot is written.
 //   edit / regenerate one carousel, status draft → in_slides → done.
 //
 // Version history:
 //   v0.1.0 (2026-11-22) — initial.
-//   v0.2.0 (2026-11-23) — CTA keywords (cta_words) rotated across posts; last slide = the
-//                         model's text around the keyword (fallback template when it is
-//                         missing the keyword).
+//   v0.2.0 (2026-11-23) — universal CTA texts with a keyword (MORE / LIST / SEND) rotated
+//                         across posts; caption checked for the same keyword.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { buildBrief, questionsFor, writeItems, type WriteSlot } from './generate';
-import { DEFAULT_CTA_WORDS, ctaFallback, type ContentPlan, type ItemStatus, type PlanCard, type PlanItem, type PlanSettings } from './types';
+import { DEFAULT_CTAS, keywordOf, type ContentPlan, type ItemStatus, type PlanCard, type PlanItem, type PlanSettings } from './types';
 
 const BATCH = 8;
 const LOCK_MS = 310_000; // > maxDuration of the step route (300 s)
@@ -37,7 +36,7 @@ export interface CreatePlanInput {
   language?: string;
   q_min?: number;
   q_max?: number;
-  cta_words?: string[];
+  cta_variants?: string[];
   notes?: string;
 }
 
@@ -59,9 +58,7 @@ export async function createPlan(sb: SupabaseClient, input: CreatePlanInput): Pr
   const perDay = Math.max(1, Math.min(6, Math.round(input.per_day ?? 3)));
   const qMin = Math.max(1, Math.min(12, Math.round(input.q_min ?? 4)));
   const qMax = Math.max(qMin, Math.min(12, Math.round(input.q_max ?? 6)));
-  const words = Array.from(
-    new Set((input.cta_words ?? DEFAULT_CTA_WORDS).map((w) => w.trim().toUpperCase()).filter((w) => /^[A-Z0-9]{1,20}$/.test(w)))
-  );
+  const ctas = (input.cta_variants ?? DEFAULT_CTAS).map((c) => c.trim()).filter(Boolean);
   const start = input.start_date && /^\d{4}-\d{2}-\d{2}$/.test(input.start_date)
     ? input.start_date
     : new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
@@ -71,7 +68,7 @@ export async function createPlan(sb: SupabaseClient, input: CreatePlanInput): Pr
     language: input.language?.trim() || 'English',
     q_min: qMin,
     q_max: qMax,
-    cta_words: words.length ? words : DEFAULT_CTA_WORDS,
+    cta_variants: ctas.length ? ctas : DEFAULT_CTAS,
     notes: (input.notes ?? '').trim(),
     brief,
     combos,
@@ -115,7 +112,7 @@ export async function createPlan(sb: SupabaseClient, input: CreatePlanInput): Pr
           slot,
           rubric: combo?.rubric ?? null,
           hook: combo?.hook ?? null,
-          cta_variant: idx % settings.cta_words!.length,
+          cta_variant: idx % settings.cta_variants.length,
         });
       }
     }
@@ -148,20 +145,21 @@ function usedList(items: PlanItem[], except?: string): string[] {
     .map((i) => `${i.title ?? ''}: ${i.slides.slice(1, -1).join(' | ')}`);
 }
 
-/** Keyword of a slot (v0.1 plans had fixed texts — their first word in capitals, else MORE). */
-export function wordOf(s: PlanSettings, it: Pick<PlanItem, 'cta_variant'>): string {
-  const words = s.cta_words?.length ? s.cta_words : DEFAULT_CTA_WORDS;
-  return words[(it.cta_variant ?? 0) % words.length];
+function ctaOf(s: PlanSettings, it: Pick<PlanItem, 'cta_variant'>): string {
+  const list = s.cta_variants?.length ? s.cta_variants : DEFAULT_CTAS;
+  return list[(it.cta_variant ?? 0) % list.length];
 }
 
 function slotOf(s: PlanSettings, it: PlanItem): WriteSlot {
+  const cta = ctaOf(s, it);
   return {
     key: it.id,
     account: it.account,
     rubric: it.rubric,
     hook: it.hook,
     questions: questionsFor(s, it.day, it.slot, it.account),
-    word: wordOf(s, it),
+    cta,
+    word: keywordOf(cta),
   };
 }
 
@@ -176,15 +174,16 @@ async function saveWritten(
   for (const it of items) {
     const w = byKey.get(it.id);
     if (!w || !w.questions.length) continue;
-    const word = wordOf(s, it);
-    // the keyword must be there exactly as written — the comment automation listens for it
-    const cta = new RegExp(`\\b${word}\\b`).test(w.cta) ? w.cta : ctaFallback(word);
+    const cta = ctaOf(s, it);
+    const word = keywordOf(cta);
+    // the caption must ask for the same keyword the automation listens for
+    const caption = !word || new RegExp(`\\b${word}\\b`).test(w.caption) ? w.caption : cta;
     await sb
       .from('content_plan_items')
       .update({
         title: w.title,
         slides: [w.cover, ...w.questions, cta],
-        caption: w.caption,
+        caption,
         updated_at: nowIso(),
       })
       .eq('id', it.id);

@@ -2,14 +2,14 @@
 //
 //   buildBrief()   snapshot of the chosen dossiers: formula, what works, carousel rubrics,
 //                  texts of the best carousels — the style the plan copies
-//   writeItems()   Claude writes carousels for given slots: cover hook + N questions + the
-//                  last slide «comment KEYWORD — I'll send you more questions» written for this
-//                  carousel (he / she / your partner) + a caption with the same keyword
+//   writeItems()   Claude writes carousels for given slots: cover hook + N questions + a
+//                  caption that repeats the keyword of the slot's CTA; the last slide is the
+//                  plan's universal CTA text, added in code
 //
 // Version history:
 //   v0.1.0 (2026-11-22) — initial.
-//   v0.2.0 (2026-11-23) — last slide written by the model around the slot's keyword (DM
-//                         promise, no «part 2», no numbers); caption repeats the keyword.
+//   v0.2.0 (2026-11-23) — CTA = universal text with a keyword (not written per post); the
+//                         caption must repeat the same keyword.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { ratioOf } from '@/lib/analysis/stats';
@@ -105,7 +105,8 @@ export interface WriteSlot {
   rubric: string | null;
   hook: string | null;
   questions: number;
-  word: string; // comment keyword for the last slide + caption
+  cta: string; // last slide (given) — the caption repeats its keyword
+  word: string | null; // keyword of the CTA
 }
 
 export interface Written {
@@ -113,7 +114,6 @@ export interface Written {
   title: string;
   cover: string;
   questions: string[];
-  cta: string;
   caption: string;
 }
 
@@ -144,7 +144,6 @@ function parseItems(answer: string): Written[] {
         title: clip(String(it.title ?? ''), 80),
         cover: String(it.cover).trim(),
         questions: it.questions.map((q) => String(q).trim()).filter(Boolean),
-        cta: String(it.cta ?? '').trim(),
         caption: String(it.caption ?? '').trim(),
       });
     }
@@ -174,7 +173,7 @@ export async function writeItems(
   slots: WriteSlot[],
   used: string[]
 ): Promise<Written[]> {
-  const prompt = `You write Instagram carousel posts for my accounts about questions for couples. Each carousel = a cover slide with a hook + one question per slide + a last slide that asks for a comment. The background photos already exist; your texts are overlaid on them, so keep every slide SHORT (cover ≤ 14 words, a question ≤ 22 words, last slide ≤ 16 words).
+  const prompt = `You write Instagram carousel posts for my accounts about questions for couples. Each carousel = a cover slide with a hook + one question per slide + a last slide that asks for a comment (the last slide is given, do not write it). The background photos already exist; your texts are overlaid on them, so keep every slide SHORT (cover ≤ 14 words, a question ≤ 22 words).
 
 Write in ${s.language}. Natural, casual, like the best examples below — not corporate, no emojis on the cover and questions, no numbering inside the questions.
 
@@ -188,7 +187,7 @@ WRITE THESE CAROUSELS (one per line; rubric / hook are the target angle — make
 ${slots
   .map(
     (x) =>
-      `key=${x.key} · account ${x.account} · rubric: ${x.rubric ?? 'any'} · hook: ${x.hook ?? 'any'} · exactly ${x.questions} questions · keyword: ${x.word}`
+      `key=${x.key} · account ${x.account} · rubric: ${x.rubric ?? 'any'} · hook: ${x.hook ?? 'any'} · exactly ${x.questions} questions · last slide (given): «${x.cta}»`
   )
   .join('\n')}
 
@@ -196,12 +195,11 @@ For every carousel:
 - title: the topic in 3–8 words (for my calendar), in Russian
 - cover: the hook text of slide 1, in ${s.language} (e.g. «SEND THIS TO YOUR BOYFRIEND — he has to answer one question»; vary the wording between carousels)
 - questions: exactly the number asked, each a separate slide, in ${s.language}, all different and fresh
-- cta: the LAST slide. Ask to comment the keyword and promise that I will SEND them more questions like these (I reply in DMs). Rules: the keyword in CAPITALS exactly as given, once; fit this carousel — who it is for (him / her / your partner / you two) and its topic; vary the wording between carousels; never promise a «part 2» or a new post; no numbers. Examples for keyword MORE: «Comment MORE and I'll send you more questions to ask him 👇», «Want more for your date night? Comment MORE and I'll send them 👇»
-- caption: 1–2 short lines in ${s.language} that repeat the same keyword request (no hashtags)
+- caption: 1–2 short lines in ${s.language} that repeat the comment request of the last slide with the SAME keyword in capitals (universal: do not address him / her; no «part 2»; no hashtags)
 Inside text values never use the " character — use «» or ' instead.
 
 Answer with ONLY this JSON:
-{"items":[{"key":"...","title":"...","cover":"...","questions":["...","..."],"cta":"...","caption":"..."}]}`;
+{"items":[{"key":"...","title":"...","cover":"...","questions":["...","..."],"caption":"..."}]}`;
   const answer = await claude(prompt, Math.min(16000, 700 * slots.length + 800));
   return parseItems(answer);
 }

@@ -8,13 +8,13 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-22) — initial.
-//   v0.2.0 (2026-11-23) — CTA keywords (MORE, NEXT, LIST, YES, SEND by default) instead of fixed
-//                         last slides; card shows the keyword.
+//   v0.2.0 (2026-11-23) — universal CTA texts with a keyword (MORE / LIST / SEND), one per line
+//                         in the form; card shows the keyword.
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SlidesImport } from '@/lib/carousels/toSlides';
-import { DEFAULT_CTA_WORDS, type ContentPlan, type ItemStatus, type PlanCard, type PlanItem } from '@/lib/plan/types';
+import { DEFAULT_CTAS, keywordOf, type ContentPlan, type ItemStatus, type PlanCard, type PlanItem } from '@/lib/plan/types';
 import type { AccountCard } from '@/lib/analysis/types';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -199,7 +199,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
   const [qMin, setQMin] = useState(4);
   const [qMax, setQMax] = useState(6);
   const [language, setLanguage] = useState('English');
-  const [words, setWords] = useState(DEFAULT_CTA_WORDS.join(', '));
+  const [ctas, setCtas] = useState(DEFAULT_CTAS.join('\n'));
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -234,7 +234,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           q_min: qMin,
           q_max: qMax,
           language,
-          cta_words: words.split(/[,\s]+/).map((w) => w.trim().toUpperCase()).filter(Boolean),
+          cta_variants: ctas.split('\n').map((l) => l.trim()).filter(Boolean),
           notes,
           sources: Array.from(picked),
         }),
@@ -312,10 +312,18 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
 
       <label className="block">
         <span className={labelCls}>
-          Слова для призыва на последнем слайде («напиши СЛОВО — пришлю ещё вопросы в директ»). Через запятую,
-          чередуются по постам — потом сравнишь, какое собирает больше комментов
+          Последний слайд — призыв в комменты: универсальные тексты со СЛОВОМ заглавными, по одному на строку.
+          Чередуются по постам — потом сравнишь, какой собирает больше комментов
         </span>
-        <input value={words} onChange={(e) => setWords(e.target.value)} className={inputCls} />
+        <textarea value={ctas} onChange={(e) => setCtas(e.target.value)} rows={6} className={`${inputCls} h-auto py-2`} />
+        {ctas
+          .split('\n')
+          .filter((l) => l.trim() && !keywordOf(l))
+          .map((l) => (
+            <p key={l} className="mt-1 text-xs text-amber-600">
+              Нет слова заглавными: «{l.trim()}»
+            </p>
+          ))}
       </label>
       <label className="block">
         <span className={labelCls}>Пожелания (необязательно)</span>
@@ -341,7 +349,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
         </button>
         <span className="text-xs text-muted">
           ≈ ${(total * PER_CAROUSEL_USD).toFixed(1)} · ≈ {Math.max(1, Math.round((total / 8) * 0.75))} мин, пока вкладка открыта.
-          Каждая карусель: обложка + {qMin}–{qMax} вопросов + слайд «напиши СЛОВО».
+          Каждая карусель: обложка + {qMin}–{qMax} вопросов + призыв.
         </span>
       </div>
       {error && <p className="text-sm text-red-600">{error}</p>}
@@ -550,13 +558,9 @@ function ItemCard({
   }
 
   const ctaIdx = it.cta_variant ?? 0;
-  const words = plan.settings.cta_words;
-  const ctaLabel = words?.length
-    ? words[ctaIdx % words.length]
-    : `вариант ${String.fromCharCode(65 + ctaIdx)}`; // v0.1 plans: fixed texts
-  const ctaTitle = words?.length ? 'слово для комментов' : plan.settings.cta_variants?.[ctaIdx] ?? '';
-  // v0.2 plans: the last slide is always the keyword slide
-  const lastIsCta = words?.length ? true : it.slides[it.slides.length - 1] === plan.settings.cta_variants?.[ctaIdx];
+  const ctaText = plan.settings.cta_variants[ctaIdx % plan.settings.cta_variants.length] ?? '';
+  const ctaLabel = keywordOf(ctaText) ?? String.fromCharCode(65 + ctaIdx);
+  const lastIsCta = it.slides[it.slides.length - 1] === ctaText;
 
   return (
     <div className="flex flex-col rounded-xl border border-edge bg-white p-4">
@@ -565,7 +569,7 @@ function ItemCard({
         <span className={`rounded-full px-2 py-0.5 ${STATUS_CLS[it.status]}`}>{STATUS_LABEL[it.status]}</span>
         {it.rubric && <span className="rounded-full border border-edge px-2 py-0.5 text-muted">{it.rubric}</span>}
         {it.hook && <span className="rounded-full border border-edge px-2 py-0.5 text-muted">{it.hook}</span>}
-        <span className="rounded-full border border-accent/40 bg-accent/5 px-2 py-0.5 font-mono font-semibold text-accent" title={ctaTitle}>
+        <span className="rounded-full border border-accent/40 bg-accent/5 px-2 py-0.5 font-mono font-semibold text-accent" title={ctaText}>
           {ctaLabel}
         </span>
       </div>
