@@ -45,6 +45,8 @@
 //                         (confirmCollection / cancelCollection). Jobs are also advanced in the
 //                         background by the worker (app/api/cron/step), no open tab needed.
 //   v0.5.1 (2026-11-23) — card summary keeps the period it covers (first / last post dates).
+//   v0.5.2 (2026-11-23) — loadPosts: keyset pages of 400 with retries (10 000-post jobs timed out
+//                         on offset pages of 1000).
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -681,20 +683,44 @@ async function stepThumbs(sb: SupabaseClient, job: AnalysisJob): Promise<boolean
   return true;
 }
 
+const LOAD_PAGE = 400;
+
+/**
+ * All posts of a job, newest first. Keyset pages (posted_at, id) on idx_analysis_posts_job_date
+ * instead of offsets: on 10 000-post jobs offset pages of 1000 wide rows hit the 8 s statement
+ * timeout. A page that still times out is retried twice.
+ */
 async function loadPosts(sb: SupabaseClient, jobId: string): Promise<AnalysisPost[]> {
   const out: AnalysisPost[] = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb
-      .from('analysis_posts')
-      .select(POST_COLS)
-      .eq('job_id', jobId)
-      .order('posted_at', { ascending: false })
-      .range(from, from + 999)
-      .returns<AnalysisPost[]>();
-    if (error) throw new Error(error.message);
-    out.push(...(data ?? []));
-    if (!data || data.length < 1000) break;
+  const page = async (after: AnalysisPost | null) => {
+    for (let attempt = 0; ; attempt++) {
+      let q = sb.from('analysis_posts').select(POST_COLS).eq('job_id', jobId).not('posted_at', 'is', null);
+      if (after) q = q.or(`posted_at.lt.${after.posted_at},and(posted_at.eq.${after.posted_at},id.lt.${after.id})`);
+      const { data, error } = await q
+        .order('posted_at', { ascending: false })
+        .order('id', { ascending: false })
+        .limit(LOAD_PAGE)
+        .returns<AnalysisPost[]>();
+      if (!error) return data ?? [];
+      if (attempt >= 2) throw new Error(error.message);
+      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+    }
+  };
+  let after: AnalysisPost | null = null;
+  for (;;) {
+    const rows = await page(after);
+    out.push(...rows);
+    if (rows.length < LOAD_PAGE) break;
+    after = rows[rows.length - 1];
   }
+  // posts without a date (rare) go last
+  const { data: undated } = await sb
+    .from('analysis_posts')
+    .select(POST_COLS)
+    .eq('job_id', jobId)
+    .is('posted_at', null)
+    .returns<AnalysisPost[]>();
+  out.push(...(undated ?? []));
   return out;
 }
 
