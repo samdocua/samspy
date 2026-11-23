@@ -2,13 +2,14 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-22) — plans, items, settings.
+//   v0.2.0 (2026-11-23) — CTA = keyword (cta_words): «comment WORD — I'll DM you more
+//                         questions»; the model writes the last slide around the word.
 
-/** Default last slides (comment bait), rotated across posts. */
-export const DEFAULT_CTAS = [
-  'Comment «I WANT MORE QUESTIONS» and I’ll drop part 2 👇',
-  'Want more? Comment «MORE» and I’ll send you the next set',
-  'Which one did he answer? Tell me in the comments 👇',
-];
+/** Default comment keywords (universal — fit any post), rotated across posts. */
+export const DEFAULT_CTA_WORDS = ['MORE', 'NEXT', 'LIST', 'YES', 'SEND'];
+
+/** Last slide when the model's text does not contain the keyword. */
+export const ctaFallback = (word: string) => `Comment ${word} and I'll send you more questions like these 👇`;
 
 export type PlanStatus = 'generating' | 'done' | 'failed';
 export type ItemStatus = 'draft' | 'in_slides' | 'done';
@@ -17,7 +18,8 @@ export interface PlanSettings {
   language: string; // 'English'
   q_min: number; // questions per carousel
   q_max: number;
-  cta_variants: string[]; // last slide texts (comment bait), rotated across posts
+  cta_words?: string[]; // comment keywords, rotated across posts (cta_variant = index)
+  cta_variants?: string[]; // v0.1 plans: fixed last-slide texts
   notes: string; // free wishes for the writer
   brief: string; // snapshot of the source dossiers (built at creation)
   combos: { rubric: string; hook: string; weight: number }[]; // what wins at the sources
@@ -49,7 +51,7 @@ export interface PlanItem {
   hook: string | null;
   title: string | null;
   slides: string[];
-  cta_variant: number | null;
+  cta_variant: number | null; // index in settings.cta_words (v0.1: in cta_variants)
   caption: string | null;
   status: ItemStatus;
   created_at: string;

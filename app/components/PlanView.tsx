@@ -8,11 +8,13 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-22) — initial.
+//   v0.2.0 (2026-11-23) — CTA keywords (MORE, NEXT, LIST, YES, SEND by default) instead of fixed
+//                         last slides; card shows the keyword.
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SlidesImport } from '@/lib/carousels/toSlides';
-import { DEFAULT_CTAS, type ContentPlan, type ItemStatus, type PlanCard, type PlanItem } from '@/lib/plan/types';
+import { DEFAULT_CTA_WORDS, type ContentPlan, type ItemStatus, type PlanCard, type PlanItem } from '@/lib/plan/types';
 import type { AccountCard } from '@/lib/analysis/types';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -197,7 +199,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
   const [qMin, setQMin] = useState(4);
   const [qMax, setQMax] = useState(6);
   const [language, setLanguage] = useState('English');
-  const [ctas, setCtas] = useState(DEFAULT_CTAS.join('\n'));
+  const [words, setWords] = useState(DEFAULT_CTA_WORDS.join(', '));
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -232,7 +234,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           q_min: qMin,
           q_max: qMax,
           language,
-          cta_variants: ctas.split('\n').map((l) => l.trim()).filter(Boolean),
+          cta_words: words.split(/[,\s]+/).map((w) => w.trim().toUpperCase()).filter(Boolean),
           notes,
           sources: Array.from(picked),
         }),
@@ -310,9 +312,10 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
 
       <label className="block">
         <span className={labelCls}>
-          Последний слайд — призыв в комменты (по варианту на строку, чередуются по постам, чтобы сравнить)
+          Слова для призыва на последнем слайде («напиши СЛОВО — пришлю ещё вопросы в директ»). Через запятую,
+          чередуются по постам — потом сравнишь, какое собирает больше комментов
         </span>
-        <textarea value={ctas} onChange={(e) => setCtas(e.target.value)} rows={4} className={`${inputCls} h-auto py-2`} />
+        <input value={words} onChange={(e) => setWords(e.target.value)} className={inputCls} />
       </label>
       <label className="block">
         <span className={labelCls}>Пожелания (необязательно)</span>
@@ -338,7 +341,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
         </button>
         <span className="text-xs text-muted">
           ≈ ${(total * PER_CAROUSEL_USD).toFixed(1)} · ≈ {Math.max(1, Math.round((total / 8) * 0.75))} мин, пока вкладка открыта.
-          Каждая карусель: обложка + {qMin}–{qMax} вопросов + призыв.
+          Каждая карусель: обложка + {qMin}–{qMax} вопросов + слайд «напиши СЛОВО».
         </span>
       </div>
       {error && <p className="text-sm text-red-600">{error}</p>}
@@ -547,7 +550,13 @@ function ItemCard({
   }
 
   const ctaIdx = it.cta_variant ?? 0;
-  const lastIsCta = it.slides[it.slides.length - 1] === plan.settings.cta_variants[ctaIdx];
+  const words = plan.settings.cta_words;
+  const ctaLabel = words?.length
+    ? words[ctaIdx % words.length]
+    : `вариант ${String.fromCharCode(65 + ctaIdx)}`; // v0.1 plans: fixed texts
+  const ctaTitle = words?.length ? 'слово для комментов' : plan.settings.cta_variants?.[ctaIdx] ?? '';
+  // v0.2 plans: the last slide is always the keyword slide
+  const lastIsCta = words?.length ? true : it.slides[it.slides.length - 1] === plan.settings.cta_variants?.[ctaIdx];
 
   return (
     <div className="flex flex-col rounded-xl border border-edge bg-white p-4">
@@ -556,8 +565,8 @@ function ItemCard({
         <span className={`rounded-full px-2 py-0.5 ${STATUS_CLS[it.status]}`}>{STATUS_LABEL[it.status]}</span>
         {it.rubric && <span className="rounded-full border border-edge px-2 py-0.5 text-muted">{it.rubric}</span>}
         {it.hook && <span className="rounded-full border border-edge px-2 py-0.5 text-muted">{it.hook}</span>}
-        <span className="rounded-full border border-edge px-2 py-0.5 text-muted" title={plan.settings.cta_variants[ctaIdx]}>
-          призыв {String.fromCharCode(65 + ctaIdx)}
+        <span className="rounded-full border border-accent/40 bg-accent/5 px-2 py-0.5 font-mono font-semibold text-accent" title={ctaTitle}>
+          {ctaLabel}
         </span>
       </div>
       {it.title && <p className="mb-2 font-semibold leading-snug">{it.title}</p>}
