@@ -2,12 +2,14 @@
 //
 //   buildBrief()   snapshot of the chosen dossiers: formula, what works, carousel rubrics,
 //                  texts of the best carousels — the style the plan copies
-//   writeItems()   Claude writes carousels for given slots: cover hook + N questions +
-//                  a comment-bait caption, in the plan language; the comment-bait LAST slide
-//                  is not written by the model — it is the plan's CTA variant, added in code
+//   writeItems()   Claude writes carousels for given slots: cover hook + N questions + a
+//                  caption that repeats the keyword of the slot's CTA; the last slide is the
+//                  plan's universal CTA text, added in code
 //
 // Version history:
 //   v0.1.0 (2026-11-22) — initial.
+//   v0.2.0 (2026-11-23) — CTA = universal text with a keyword (not written per post); the
+//                         caption must repeat the same keyword.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { ratioOf } from '@/lib/analysis/stats';
@@ -103,7 +105,8 @@ export interface WriteSlot {
   rubric: string | null;
   hook: string | null;
   questions: number;
-  cta: string; // last slide text (comment bait) — the caption must fit it
+  cta: string; // last slide (given) — the caption repeats its keyword
+  word: string | null; // keyword of the CTA
 }
 
 export interface Written {
@@ -170,9 +173,9 @@ export async function writeItems(
   slots: WriteSlot[],
   used: string[]
 ): Promise<Written[]> {
-  const prompt = `You write Instagram carousel posts for my accounts about questions for couples. Each carousel = a cover slide with a hook + one question per slide + a last slide that asks for comments (the last slide is given, do not write it). The background photos already exist; your texts are overlaid on them, so keep every slide SHORT (cover ≤ 14 words, a question ≤ 22 words).
+  const prompt = `You write Instagram carousel posts for my accounts about questions for couples. Each carousel = a cover slide with a hook + one question per slide + a last slide that asks for a comment (the last slide is given, do not write it). The background photos already exist; your texts are overlaid on them, so keep every slide SHORT (cover ≤ 14 words, a question ≤ 22 words).
 
-Write in ${s.language}. Natural, casual, like the best examples below — not corporate, no emojis on slides, no numbering inside the questions.
+Write in ${s.language}. Natural, casual, like the best examples below — not corporate, no emojis on the cover and questions, no numbering inside the questions.
 
 WHAT WORKS AT THE SOURCE ACCOUNTS (study the style, hooks and question types — do not copy questions word for word):
 ${s.brief || '(no source dossiers)'}
@@ -192,7 +195,7 @@ For every carousel:
 - title: the topic in 3–8 words (for my calendar), in Russian
 - cover: the hook text of slide 1, in ${s.language} (e.g. «SEND THIS TO YOUR BOYFRIEND — he has to answer one question»; vary the wording between carousels)
 - questions: exactly the number asked, each a separate slide, in ${s.language}, all different and fresh
-- caption: 1–2 short lines in ${s.language} that bait comments and match the last slide (no hashtags)
+- caption: 1–2 short lines in ${s.language} that repeat the comment request of the last slide with the SAME keyword in capitals (universal: do not address him / her; no «part 2»; no hashtags)
 Inside text values never use the " character — use «» or ' instead.
 
 Answer with ONLY this JSON:

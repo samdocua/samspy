@@ -3,17 +3,19 @@
 //   create:  sources (dossiers) + accounts + days × per day → plan + one empty item per slot.
 //            Each slot gets a target rubric × hook, drawn from what wins at the sources
 //            (weighted, no rubric twice a day per account, ~20 % exploration), the number of
-//            questions (q_min…q_max) and a comment-bait last slide (CTA variants rotated).
+//            questions (q_min…q_max) and a universal CTA text (rotated).
 //   step:    writes the next batch of empty slots (Claude), lock per plan; the open tab keeps
 //            calling it until every slot is written.
 //   edit / regenerate one carousel, status draft → in_slides → done.
 //
 // Version history:
 //   v0.1.0 (2026-11-22) — initial.
+//   v0.2.0 (2026-11-23) — universal CTA texts with a keyword (MORE / LIST / SEND) rotated
+//                         across posts; caption checked for the same keyword.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { buildBrief, questionsFor, writeItems, type WriteSlot } from './generate';
-import { DEFAULT_CTAS, type ContentPlan, type ItemStatus, type PlanCard, type PlanItem, type PlanSettings } from './types';
+import { DEFAULT_CTAS, keywordOf, type ContentPlan, type ItemStatus, type PlanCard, type PlanItem, type PlanSettings } from './types';
 
 const BATCH = 8;
 const LOCK_MS = 310_000; // > maxDuration of the step route (300 s)
@@ -143,14 +145,21 @@ function usedList(items: PlanItem[], except?: string): string[] {
     .map((i) => `${i.title ?? ''}: ${i.slides.slice(1, -1).join(' | ')}`);
 }
 
+function ctaOf(s: PlanSettings, it: Pick<PlanItem, 'cta_variant'>): string {
+  const list = s.cta_variants?.length ? s.cta_variants : DEFAULT_CTAS;
+  return list[(it.cta_variant ?? 0) % list.length];
+}
+
 function slotOf(s: PlanSettings, it: PlanItem): WriteSlot {
+  const cta = ctaOf(s, it);
   return {
     key: it.id,
     account: it.account,
     rubric: it.rubric,
     hook: it.hook,
     questions: questionsFor(s, it.day, it.slot, it.account),
-    cta: s.cta_variants[it.cta_variant ?? 0] ?? s.cta_variants[0] ?? '',
+    cta,
+    word: keywordOf(cta),
   };
 }
 
@@ -165,13 +174,16 @@ async function saveWritten(
   for (const it of items) {
     const w = byKey.get(it.id);
     if (!w || !w.questions.length) continue;
-    const cta = s.cta_variants[it.cta_variant ?? 0] ?? '';
+    const cta = ctaOf(s, it);
+    const word = keywordOf(cta);
+    // the caption must ask for the same keyword the automation listens for
+    const caption = !word || new RegExp(`\\b${word}\\b`).test(w.caption) ? w.caption : cta;
     await sb
       .from('content_plan_items')
       .update({
         title: w.title,
-        slides: [w.cover, ...w.questions, ...(cta ? [cta] : [])],
-        caption: w.caption,
+        slides: [w.cover, ...w.questions, cta],
+        caption,
         updated_at: nowIso(),
       })
       .eq('id', it.id);

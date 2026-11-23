@@ -2,13 +2,23 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-22) — plans, items, settings.
+//   v0.2.0 (2026-11-23) — CTA = fixed universal texts with a comment keyword (MORE / LIST /
+//                         SEND), rotated across posts; keywordOf() finds the word.
 
-/** Default last slides (comment bait), rotated across posts. */
+/** Default last slides: universal (fit any post), each with a comment keyword. Rotated. */
 export const DEFAULT_CTAS = [
-  'Comment «I WANT MORE QUESTIONS» and I’ll drop part 2 👇',
-  'Want more? Comment «MORE» and I’ll send you the next set',
-  'Which one did he answer? Tell me in the comments 👇',
+  'Comment MORE and I’ll send you more questions 👇',
+  'Want more? Comment LIST and I’ll send them',
+  'Comment SEND and I’ll DM you the full list',
+  'Want the rest? Comment MORE and I’ll send them 👇',
+  'Need more questions? Comment LIST 👇',
+  'Comment SEND and they’re yours',
 ];
+
+/** The comment keyword of a CTA text: the first word in capitals (3+ letters). */
+export function keywordOf(cta: string): string | null {
+  return cta.match(/\b[A-Z]{3,}\b/)?.[0] ?? null;
+}
 
 export type PlanStatus = 'generating' | 'done' | 'failed';
 export type ItemStatus = 'draft' | 'in_slides' | 'done';
@@ -17,7 +27,7 @@ export interface PlanSettings {
   language: string; // 'English'
   q_min: number; // questions per carousel
   q_max: number;
-  cta_variants: string[]; // last slide texts (comment bait), rotated across posts
+  cta_variants: string[]; // last slide texts with a comment keyword, rotated across posts
   notes: string; // free wishes for the writer
   brief: string; // snapshot of the source dossiers (built at creation)
   combos: { rubric: string; hook: string; weight: number }[]; // what wins at the sources
@@ -49,7 +59,7 @@ export interface PlanItem {
   hook: string | null;
   title: string | null;
   slides: string[];
-  cta_variant: number | null;
+  cta_variant: number | null; // index in settings.cta_variants
   caption: string | null;
   status: ItemStatus;
   created_at: string;
