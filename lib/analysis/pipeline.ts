@@ -331,6 +331,7 @@ async function stepFetch(sb: SupabaseClient, job: AnalysisJob, deadline: number)
         (it) => it.isPinned || !it.timestamp || new Date(it.timestamp).getTime() >= sinceMs
       );
       if (keep.length) await upsertPosts(sb, postRows(job, keep));
+      if (!f.newest) f.newest = page.items.find((it) => !it.isPinned && it.timestamp)?.timestamp ?? null;
       f.pages += 1;
       f.posts += keep.length;
       f.cursor = page.next;
@@ -501,7 +502,11 @@ async function stepSave(sb: SupabaseClient, job: AnalysisJob): Promise<AnalysisS
     const { data: saved } = await sb.from('analysis_posts').select('shortcode').eq('job_id', job.id).limit(10000);
     const fresh = new Set((saved ?? []).map((r) => r.shortcode as string));
     if (!fresh.size && job.mode !== 'update') {
-      await failJob(sb, job.id, 'Не пришло ни одного поста (аккаунт пуст за год).');
+      const newest = job.scrape.newest
+        ? ` Самый свежий пост в сетке — ${new Date(job.scrape.newest).toLocaleDateString('ru-RU')}` +
+          ' (рилсы, которых нет в сетке, сборщик не видит).'
+        : ' Лента профиля пустая.';
+      await failJob(sb, job.id, `За последний год постов нет.${newest}`);
       return 'failed';
     }
     if (job.mode === 'update' && job.base_job_id) await carryOver(sb, job, fresh);

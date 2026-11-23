@@ -38,6 +38,7 @@ export interface FetchState {
   cursor?: string | null;
   pages: number;
   posts: number;
+  newest?: string | null; // newest non-pinned post seen in the feed (for the «empty» message)
   done?: boolean;
   /** failed rounds of the current feed request in a row */
   fails: number;
