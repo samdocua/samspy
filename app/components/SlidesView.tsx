@@ -57,6 +57,7 @@
 //                         always shown in the folder block (disabled at 0); toolbar
 //                         «Сбросить» → «Сбросить настройки».
 //   v1.0.3 (2026-11-20) — settings export / import removed (not needed).
+//   v1.1.0 (2026-11-22) — carousels from «План»: «Скачать все» marks the plan item done.
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -221,6 +222,7 @@ export default function SlidesView({
   const activeRef = useRef(activeId);
   const settingsRef = useRef(settings);
   const poolRef = useRef<Pool | null>(null);
+  const planItemRef = useRef<string | null>(null); // carousel from «План» now in the strip
   const previewRef = useRef<HTMLCanvasElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
@@ -482,6 +484,7 @@ export default function SlidesView({
         return;
       }
       replaceSlides(mode === 'replace' ? fresh : [...slidesRef.current, ...fresh]);
+      planItemRef.current = mode === 'replace' ? imp.planItemId ?? null : null;
       setActiveId(fresh[0].id);
       setPendingImport(null);
       if (poolRef.current) {
@@ -655,7 +658,14 @@ export default function SlidesView({
       const zip = zipSync(files);
       await target.write(new Blob([zip as BlobPart], { type: 'application/zip' }));
       rememberUsed(ready.map(({ s }) => s));
-      flash(`Архив: ${ready.length} слайдов`);
+      if (planItemRef.current) {
+        void fetch(`/api/plans/items/${planItemRef.current}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'done' }),
+        });
+      }
+      flash(`Архив: ${ready.length} слайдов${planItemRef.current ? ' · в «Плане» отмечено «готово»' : ''}`);
     } catch (e) {
       flash(`Не удалось собрать архив: ${(e as Error).message}`);
     } finally {

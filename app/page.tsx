@@ -12,6 +12,7 @@
 //   v0.7.0 (2026-11-20) — «Размножение» tab: one photo → N slightly different AI copies.
 //                         Not tied to a platform (pills hidden), stays mounted.
 //   v0.8.0 (2026-11-22) — «Анализ» tab (Instagram only): account dossier from a link.
+//   v0.9.0 (2026-11-22) — «План» tab: carousel content plan → «Слайды».
 'use client';
 
 import { useState } from 'react';
@@ -23,6 +24,7 @@ import SlidesView from './components/SlidesView';
 import CarouselsView from './components/CarouselsView';
 import MultiplyView from './components/MultiplyView';
 import AnalysisView from './components/AnalysisView';
+import PlanView from './components/PlanView';
 import type { SlidesImport } from '@/lib/carousels/toSlides';
 
 async function logout() {
@@ -30,7 +32,7 @@ async function logout() {
   window.location.href = '/login';
 }
 
-type Tab = 'competitors' | 'search' | 'top' | 'carousels' | 'analysis' | 'slides' | 'multiply';
+type Tab = 'competitors' | 'search' | 'top' | 'carousels' | 'analysis' | 'plan' | 'slides' | 'multiply';
 
 // tabs not tied to Instagram / TikTok — the platform pills hide on them
 const PLATFORMLESS: Tab[] = ['slides', 'multiply'];
@@ -42,6 +44,7 @@ const TABS: { id: Tab; label: string; platforms?: Platform[] }[] = [
   { id: 'top', label: 'Топ' },
   { id: 'carousels', label: 'Карусели', platforms: ['instagram'] },
   { id: 'analysis', label: 'Анализ', platforms: ['instagram'] },
+  { id: 'plan', label: 'План', platforms: ['instagram'] },
   { id: 'slides', label: 'Слайды' },
   { id: 'multiply', label: 'Размножение' },
 ];
@@ -136,6 +139,15 @@ export default function Home() {
       {/* analysis stays mounted too (keeps advancing running dossier jobs) */}
       <div className={tab === 'analysis' && platform === 'instagram' ? '' : 'hidden'}>
         <AnalysisView />
+      </div>
+      {/* plan stays mounted too (keeps writing a plan while generating) */}
+      <div className={tab === 'plan' && platform === 'instagram' ? '' : 'hidden'}>
+        <PlanView
+          onSendToSlides={(imp) => {
+            setSlidesImport(imp);
+            setTab('slides');
+          }}
+        />
       </div>
       {/* slides stays mounted so generated images survive tab switches */}
       <div className={tab === 'slides' ? '' : 'hidden'}>
