@@ -1,7 +1,7 @@
 // SamSpy — CarouselsView (tab «Карусели», Instagram only)
 // Paste Instagram carousel links → collect slide texts (ScrapeCreators + Claude OCR).
 // While this tab is open it keeps advancing unfinished jobs (POST …/step);
-// closing the tab pauses them, reopening resumes.
+// the background worker (app/api/cron/step) advances them too, so closing the tab is fine.
 //
 // Version history:
 //   v0.4.0 (2026-11-18) — create job, jobs list with progress, result table (one post per row),
@@ -13,6 +13,7 @@
 //                         outlier badge (likes ÷ author's median likes); «Дубль» / «Похож на …».
 //   v0.7.1 (2026-11-20) — «Посчитать outlier (N)» for posts collected earlier.
 //   v0.8.0 (2026-11-23) — wording: posts come from ScrapeCreators (Apify kept as a fallback).
+//   v0.8.1 (2026-11-23) — jobs run in the background; copy updated.
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -242,7 +243,7 @@ function CreateJob({
       <h2 className="mb-1 text-sm font-semibold text-gray-900">Собрать тексты каруселей</h2>
       <p className="mb-3 text-xs text-muted">
         Ссылки на посты, по одной в строке. ~$0.004 за карусель (1 кредит ScrapeCreators + распознавание). Уже
-        собранные посты берутся из базы бесплатно. Пока идёт сбор, держи вкладку открытой.
+        собранные посты берутся из базы бесплатно. Сбор идёт в фоне — вкладку можно закрыть.
       </p>
       <form onSubmit={submit} className="flex flex-col gap-2">
         <textarea

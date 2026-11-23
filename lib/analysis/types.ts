@@ -8,8 +8,11 @@
 //   v0.3.2 (2026-11-22) — rubric / hook stats per content type (KindTab).
 //   v0.4.0 (2026-11-23) — job.scrape: ScrapeCreators collection state (migration-010, column scrape);
 //                         status 'apify' now means «collecting» for both scrapers.
+//   v0.5.0 (2026-11-23) — status 'confirm': a full collection waits for the post limit when the
+//                         year looks big (scrape.estimate / scrape.limit); card.job.estimate.
 
 export type AnalysisStatus =
+  | 'confirm'
   | 'apify'
   | 'save'
   | 'thumbs'
@@ -30,6 +33,13 @@ export interface RetryMark {
   err?: string;
 }
 
+export interface PostsEstimate {
+  year: number; // posts in the last year (estimate)
+  per_day: number;
+  total: number | null; // posts of the profile, all time
+  exact: boolean; // the first page already reached a year back
+}
+
 /** ScrapeCreators collection state (job.scrape); null on Apify jobs. */
 export interface FetchState {
   provider: 'sc';
@@ -39,6 +49,10 @@ export interface FetchState {
   pages: number;
   posts: number;
   newest?: string | null; // newest non-pinned post seen in the feed (for the «empty» message)
+  /** posts a year, estimated from the first feed page (full collection only) */
+  estimate?: PostsEstimate;
+  /** chosen post limit (full collection of a big account) */
+  limit?: number;
   done?: boolean;
   /** failed rounds of the current feed request in a row */
   fails: number;
@@ -269,6 +283,8 @@ export interface AccountCard {
     mode: JobMode;
     error: string | null;
     progress: string | null;
+    estimate: PostsEstimate | null; // status 'confirm': how many posts a year
+    collected: number; // posts already collected (first page)
     created_at: string;
   } | null;
   updated_at: string;

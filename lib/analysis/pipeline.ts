@@ -40,6 +40,10 @@
 //                         page goes back in line and is retried later (20–60 s apart, up to 3
 //                         rounds for comments, 6 for the feed). A feed that still fails stops
 //                         the job; «Повторить» resumes from the saved cursor.
+//   v0.5.0 (2026-11-23) — a full collection estimates posts a year from the first feed page;
+//                         above CONFIRM_ABOVE the job waits in 'confirm' until a limit is chosen
+//                         (confirmCollection / cancelCollection). Jobs are also advanced in the
+//                         background by the worker (app/api/cron/step), no open tab needed.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -76,6 +80,7 @@ import type {
   Dossier,
   FetchState,
   JobMode,
+  PostsEstimate,
   KindTab,
   PostKind,
   PostRow,
@@ -103,6 +108,9 @@ const COMMENT_ROUNDS = 3; // comments of one post: rounds of 3 tries before it i
 const RETRY_GAP_MS = 20_000; // pause before the next round grows with each failure
 const SC_COMMENT_PAGE = 12;
 const SC_CONCURRENCY = 3;
+// big accounts: ask before a full collection
+export const CONFIRM_ABOVE = 500; // posts a year
+export const LIMIT_ALL = envNum('ANALYSIS_MAX_ALL', 10_000, 500, 20_000); // «весь год» cap
 const TRANSCRIBE_TOP = envNum('ANALYSIS_TRANSCRIBE_TOP', 30, 0, 100);
 const OCR_TOP = envNum('ANALYSIS_OCR_TOP', 10, 0, 40);
 const BREAKDOWN_REELS = envNum('ANALYSIS_BREAKDOWN_REELS', 15, 0, 40);
@@ -151,7 +159,7 @@ export async function createAnalysis(
     .from('analysis_jobs')
     .select(JOB_COLS)
     .eq('username', username)
-    .in('status', ACTIVE)
+    .in('status', [...ACTIVE, 'confirm'])
     .order('created_at', { ascending: false })
     .limit(1)
     .returns<AnalysisJob[]>();
@@ -169,8 +177,10 @@ export async function createAnalysis(
     const j = last?.[0];
     if (j && j.status === 'failed' && j.scrape?.provider === 'sc' && !j.scrape.done && j.scrape.profile) {
       const scrape: FetchState = { ...j.scrape, fails: 0, retry_at: undefined };
-      await setJob(sb, j.id, { status: 'apify', error: null, scrape });
-      return { ...j, status: 'apify', error: null, scrape };
+      // a big account whose limit was never chosen (cancelled) → ask again
+      const status = scrape.limit == null && (scrape.estimate?.year ?? 0) > CONFIRM_ABOVE ? 'confirm' : 'apify';
+      await setJob(sb, j.id, { status, error: null, scrape });
+      return { ...j, status, error: null, scrape };
     }
   }
 
@@ -341,7 +351,15 @@ async function stepFetch(sb: SupabaseClient, job: AnalysisJob, deadline: number)
       // pinned posts sit on top of the first page, so the last item tells where the page ends
       const last = page.items[page.items.length - 1];
       const pastPeriod = !!last?.timestamp && new Date(last.timestamp).getTime() < sinceMs && !last.isPinned;
-      if (!page.next || !page.items.length || pastPeriod || f.posts >= MAX_POSTS) f.done = true;
+      if (!page.next || !page.items.length || pastPeriod || f.posts >= (f.limit ?? MAX_POSTS)) f.done = true;
+      // full collection: estimate the year from the first page, ask when it is big
+      if (job.mode === 'full' && f.pages === 1 && f.limit == null) {
+        f.estimate = estimateYear(page.items, sinceMs, f.profile?.postsCount ?? null);
+        if (!f.done && f.estimate.year > CONFIRM_ABOVE) {
+          await saveFetch(sb, job);
+          return 'confirm';
+        }
+      }
       await saveFetch(sb, job);
     }
   } catch (e) {
@@ -372,6 +390,38 @@ async function stepFetch(sb: SupabaseClient, job: AnalysisJob, deadline: number)
     return 'apify';
   }
   return f.done ? 'save' : 'apify';
+}
+
+/** Posts a year from the first feed page (12 newest): rate since the 12th post × 365. */
+function estimateYear(items: PostItem[], sinceMs: number, total: number | null): PostsEstimate {
+  const times = items
+    .filter((it) => !it.isPinned && it.timestamp)
+    .map((it) => new Date(it.timestamp!).getTime())
+    .sort((a, b) => b - a);
+  if (!times.length) return { year: 0, per_day: 0, total, exact: true };
+  const inYear = times.filter((t) => t >= sinceMs).length;
+  if (inYear < times.length) return { year: inYear, per_day: +(inYear / 365).toFixed(2), total, exact: true };
+  const days = Math.max(1, (Date.now() - times[times.length - 1]) / DAY);
+  const perDay = times.length / days;
+  const year = Math.round(Math.min(total ?? Infinity, perDay * 365));
+  return { year, per_day: +perDay.toFixed(1), total, exact: false };
+}
+
+/** Big account: start the collection with the chosen limit (number of newest posts or 'all'). */
+export async function confirmCollection(sb: SupabaseClient, jobId: string, limit: number | 'all') {
+  const { data: job } = await sb.from('analysis_jobs').select(JOB_COLS).eq('id', jobId).maybeSingle<AnalysisJob>();
+  if (!job || job.status !== 'confirm' || !job.scrape) throw new Error('Сбор уже не ждёт выбора.');
+  const n = limit === 'all' ? LIMIT_ALL : Math.max(12, Math.min(LIMIT_ALL, Math.round(limit)));
+  const scrape: FetchState = { ...job.scrape, limit: n };
+  // the limit is already reached by the first page (tiny limit) → nothing more to page
+  if (scrape.posts >= n) scrape.done = true;
+  await setJob(sb, jobId, { status: 'apify', scrape });
+}
+
+export async function cancelCollection(sb: SupabaseClient, jobId: string) {
+  const { data: job } = await sb.from('analysis_jobs').select('status').eq('id', jobId).maybeSingle();
+  if (job?.status !== 'confirm') return;
+  await setJob(sb, jobId, { status: 'failed', error: 'Сбор отменён.' });
 }
 
 async function stepApify(sb: SupabaseClient, job: AnalysisJob): Promise<AnalysisStatus> {
@@ -1102,6 +1152,8 @@ export async function listCards(sb: SupabaseClient): Promise<AccountCard[]> {
               mode: j.mode,
               error: j.error,
               progress: ACTIVE.includes(j.status) ? await progressOf(sb, j) : null,
+              estimate: j.status === 'confirm' ? j.scrape?.estimate ?? null : null,
+              collected: j.scrape?.posts ?? 0,
               created_at: j.created_at,
             }
           : null,
