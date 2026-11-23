@@ -28,6 +28,8 @@
 //   v0.4.1 (2026-11-23) — limit buttons say «Последние 500 постов» (full numbers, plural forms).
 //   v0.4.2 (2026-11-23) — own number of posts (field + «Собрать»); every option shows $ too.
 //   v0.4.3 (2026-11-23) — card line «Период: 23.11.2025 – 22.11.2026 · 661 пост · обновлено …».
+//   v0.4.4 (2026-11-23) — posts per day instead of per week (card + dossier); card median says
+//                         what it is: «медиана просмотров» (reels) / «медиана лайков» (carousels).
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -64,6 +66,11 @@ const fmtX = (n: number | null | undefined) =>
       ? `×${Math.round(n).toLocaleString('ru-RU')}`
       : `×${n.toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
 const fmtDate = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString('ru-RU') : '—');
+/** posts a week → a day: «1,8», «26», «0,3» */
+const fmtDay = (perWeek: number) => {
+  const d = perWeek / 7;
+  return d.toLocaleString('ru-RU', { maximumFractionDigits: d >= 10 ? 0 : d >= 0.1 || d === 0 ? 1 : 2 });
+};
 const fmtSec = (n: number | null | undefined) => (n == null ? '—' : `${Math.round(n)} с`);
 const KIND_LABEL: Record<PostKind, string> = { reel: 'Reels', carousel: 'Карусель', photo: 'Фото' };
 const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
@@ -452,7 +459,9 @@ function AccountCardView({
         <div className="mt-4 grid grid-cols-4 gap-2 border-t border-edge pt-3 text-center">
           <div>
             <div className="font-mono text-sm font-semibold">{fmtNum(c.summary.median_views)}</div>
-            <div className="text-[11px] text-muted">медиана</div>
+            <div className="text-[11px] text-muted">
+              {c.summary.median_kind === 'likes' ? 'медиана лайков' : 'медиана просмотров'}
+            </div>
           </div>
           <div>
             <div className="font-mono text-sm font-semibold">{fmtPct(c.summary.outliers_pct, 0)}</div>
@@ -460,9 +469,9 @@ function AccountCardView({
           </div>
           <div>
             <div className="font-mono text-sm font-semibold">
-              {c.summary.per_week.toLocaleString('ru-RU')}
+              {fmtDay(c.summary.per_week)}
             </div>
-            <div className="text-[11px] text-muted">в неделю</div>
+            <div className="text-[11px] text-muted">постов в день</div>
           </div>
           <div>
             <div className="font-mono text-sm font-semibold">
@@ -655,7 +664,7 @@ function DossierBody({ d }: { d: Dossier }) {
             <Tile value={`${s.reels.outliers} из ${s.reels.count}`} label="залётов от 2× медианы" />
             <BestTile k={s.reels} post={s.reels.best ? bySc.get(s.reels.best.shortcode) : undefined} label="лучший ролик" />
             <Tile value={<Trend x={s.reels.trend} />} label="медиана за месяц к прошлым" />
-            <Tile value={s.reels.per_week.toLocaleString('ru-RU')} label="рилсов в неделю" />
+            <Tile value={fmtDay(s.reels.per_week)} label="рилсов в день" />
             <Tile value={fmtPct(s.reels.likes_pct, 2)} label="лайков от просмотров" />
             <Tile value={s.reels.comments_per_1000?.toLocaleString('ru-RU') ?? '—'} label="комментов на 1000 просмотров" />
             <Tile
@@ -680,7 +689,7 @@ function DossierBody({ d }: { d: Dossier }) {
                 <Tile value={`${s.carousels.outliers} из ${s.carousels.count}`} label="залётов от 2× медианы" />
                 <BestTile k={s.carousels} post={s.carousels.best ? bySc.get(s.carousels.best.shortcode) : undefined} label="лучшая карусель, лайков" />
                 <Tile value={<Trend x={s.carousels.trend} />} label="медиана за месяц к прошлым" />
-                <Tile value={s.carousels.per_week.toLocaleString('ru-RU')} label="каруселей в неделю" />
+                <Tile value={fmtDay(s.carousels.per_week)} label="каруселей в день" />
                 <Tile value={s.carousels.median_slides ?? '—'} label="слайдов в карусели (медиана)" />
                 <Tile value={s.carousels.comments_per_1000?.toLocaleString('ru-RU') ?? '—'} label="комментов на 1000 лайков" />
               </>
@@ -695,7 +704,7 @@ function DossierBody({ d }: { d: Dossier }) {
         <h3 className="mb-3 text-lg font-bold">Аккаунт в целом</h3>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           <Tile value={s.total} label={`постов за ${Math.round(s.period.days / 30)} мес.`} />
-          <Tile value={s.per_week.toLocaleString('ru-RU')} label="постов в неделю" />
+          <Tile value={fmtDay(s.per_week)} label="постов в день" />
           <Tile value={fmtPct(s.cta_pct, 0)} label="с призывом в подписи" />
           <Tile value={fmtPct(s.collab_pct, 0)} label="коллабы с соавтором" />
           <Tile value={fmtPct(s.engagement_pct, 2)} label="ER: медиана (лайки + комменты) ÷ подписчики" />
