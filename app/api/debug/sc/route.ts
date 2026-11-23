@@ -64,7 +64,22 @@ function find(v: unknown, keys: string[]): unknown {
 }
 
 export async function GET(req: Request) {
-  const handle = new URL(req.url).searchParams.get('handle') || '21questions.couples';
+  const sp = new URL(req.url).searchParams;
+  const handle = sp.get('handle') || '21questions.couples';
+  const forced = sp.get('post');
+  const strip = (r: Awaited<ReturnType<typeof call>> | null) => (r ? { ...r, raw: undefined } : null);
+
+  // ?post=<url> — test only the single-post and comments endpoints (1–3 credits)
+  if (forced) {
+    const post = await call('/v1/instagram/post', { url: forced });
+    const postReel =
+      post.status === 404 && forced.includes('/p/')
+        ? await call('/v1/instagram/post', { url: forced.replace('/p/', '/reel/') })
+        : null;
+    const comments = await call('/v2/instagram/post/comments', { url: forced });
+    return NextResponse.json({ post_url: forced, post: strip(post), post_reel_retry: strip(postReel), comments: strip(comments) });
+  }
+
   const profile = await call('/v1/instagram/profile', { handle, trim: 'true' });
   const posts1 = await call('/v2/instagram/user/posts', { handle });
   const cursor = find(posts1.raw, ['next_max_id', 'cursor', 'next_cursor', 'end_cursor']);
@@ -75,7 +90,6 @@ export async function GET(req: Request) {
   const post = postUrl ? await call('/v1/instagram/post', { url: postUrl }) : null;
   const comments = postUrl ? await call('/v2/instagram/post/comments', { url: postUrl }) : null;
 
-  const strip = (r: Awaited<ReturnType<typeof call>> | null) => (r ? { ...r, raw: undefined } : null);
   return NextResponse.json({
     handle,
     cursor_found: cursor ?? null,
