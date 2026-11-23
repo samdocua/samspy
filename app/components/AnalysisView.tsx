@@ -27,6 +27,7 @@
 //                         run in the background, the tab only shows progress.
 //   v0.4.1 (2026-11-23) — limit buttons say «Последние 500 постов» (full numbers, plural forms).
 //   v0.4.2 (2026-11-23) — own number of posts (field + «Собрать»); every option shows $ too.
+//   v0.4.3 (2026-11-23) — card line «Период: 23.11.2025 – 22.11.2026 · 661 пост · обновлено …».
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -382,6 +383,23 @@ function ConfirmBox({
   );
 }
 
+/** What the card numbers cover: dates, number of posts, when collected. */
+function PeriodLine({ s }: { s: NonNullable<AccountCard['summary']> }) {
+  const p = s.period;
+  const d = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString('ru-RU') : '—');
+  const at = p
+    ? new Date(p.collected_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+    : null;
+  return (
+    <p className="mt-3 text-xs text-muted">
+      <span className="font-medium text-gray-700">Период:</span>{' '}
+      {p ? `${d(p.from)} – ${d(p.to)}` : 'последний год'} ·{' '}
+      {p?.limited ? `${posts(s.posts)} (последние)` : posts(s.posts)}
+      {at ? ` · обновлено ${at}` : ''}
+    </p>
+  );
+}
+
 // --- account card ----------------------------------------------------------------------------
 function AccountCardView({
   card: c,
@@ -421,6 +439,7 @@ function AccountCardView({
         </div>
       </div>
 
+      {c.summary && <PeriodLine s={c.summary} />}
       {running && <p className="mt-3 text-xs text-accent">{c.job?.progress ?? 'В работе…'}</p>}
       {c.job?.status === 'confirm' && c.job.estimate && (
         <div onClick={(e) => e.stopPropagation()}>

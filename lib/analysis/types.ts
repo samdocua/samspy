@@ -10,6 +10,7 @@
 //                         status 'apify' now means «collecting» for both scrapers.
 //   v0.5.0 (2026-11-23) — status 'confirm': a full collection waits for the post limit when the
 //                         year looks big (scrape.estimate / scrape.limit); card.job.estimate.
+//   v0.5.1 (2026-11-23) — CardSummary.period: dates the card numbers cover.
 
 export type AnalysisStatus =
   | 'confirm'
@@ -266,6 +267,15 @@ export interface CardSummary {
   per_week: number;
   trend: number | null;
   posts: number;
+  /** what the card numbers cover (older summaries may not have it) */
+  period?: CardPeriod;
+}
+
+export interface CardPeriod {
+  from: string | null; // oldest post in the dossier (pinned ones aside)
+  to: string | null; // newest post
+  limited: boolean; // a post limit was chosen («последние N постов»), not the whole year
+  collected_at: string; // when the dossier job started
 }
 
 /** Card on the home screen: account + its latest job (running or done). */

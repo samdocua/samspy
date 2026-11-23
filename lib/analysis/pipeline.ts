@@ -44,6 +44,7 @@
 //                         above CONFIRM_ABOVE the job waits in 'confirm' until a limit is chosen
 //                         (confirmCollection / cancelCollection). Jobs are also advanced in the
 //                         background by the worker (app/api/cron/step), no open tab needed.
+//   v0.5.1 (2026-11-23) — card summary keeps the period it covers (first / last post dates).
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -77,6 +78,7 @@ import type {
   AnalysisJob,
   AnalysisPost,
   AnalysisStatus,
+  CardPeriod,
   Dossier,
   FetchState,
   JobMode,
@@ -705,9 +707,22 @@ async function stepStats(sb: SupabaseClient, job: AnalysisJob): Promise<Analysis
     .maybeSingle<{ followers: number | null }>();
   const stats = computeStats(posts, acc?.followers ?? null, job.period_from, job.created_at);
   await setJob(sb, job.id, { stats });
+  // dates the card covers: oldest / newest post in the period (pinned ones aside)
+  const fromMs = new Date(job.period_from).getTime();
+  const dates = posts
+    .filter((p) => !p.is_pinned && p.posted_at && new Date(p.posted_at).getTime() >= fromMs)
+    .map((p) => p.posted_at!)
+    .sort();
+  const limit = job.scrape?.limit;
+  const period: CardPeriod = {
+    from: dates[0] ?? null,
+    to: dates[dates.length - 1] ?? null,
+    limited: limit != null && (job.scrape?.posts ?? 0) >= limit,
+    collected_at: job.created_at,
+  };
   await sb
     .from('analysis_accounts')
-    .update({ last_job_id: job.id, summary: cardSummary(stats), updated_at: nowIso() })
+    .update({ last_job_id: job.id, summary: { ...cardSummary(stats), period }, updated_at: nowIso() })
     .eq('username', job.username);
   job.stats = stats;
   return 'comments';
