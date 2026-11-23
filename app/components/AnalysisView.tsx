@@ -22,6 +22,11 @@
 //                         Карусели / Фото (share and figure within that content type).
 //   v0.3.3 (2026-11-22) — post ids written by the model in texts ([DYZ0i8PCjXa]) become
 //                         «№N» links; ×ratios rounded (×4,4 / ×1435).
+//   v0.4.0 (2026-11-23) — big account: the card asks how many of the newest posts to collect
+//                         (500 / 1000 / 2000 / весь год, with depth in days and credits); jobs
+//                         run in the background, the tab only shows progress.
+//   v0.4.1 (2026-11-23) — limit buttons say «Последние 500 постов» (full numbers, plural forms).
+//   v0.4.2 (2026-11-23) — own number of posts (field + «Собрать»); every option shows $ too.
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -174,12 +179,27 @@ export default function AnalysisView() {
       setNotice(
         data.card.job?.mode === 'update'
           ? `@${data.card.username}: собираю новые посты — обычно пара минут.`
-          : `@${data.card.username}: сбор за год запущен — это займёт несколько минут. Вкладку можно не держать открытой, продолжится при следующем заходе.`
+          : `@${data.card.username}: сбор за год запущен — идёт в фоне, вкладку можно закрыть.`
       );
     } catch (e) {
       setNotice((e as Error).message);
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function pickLimit(jobId: string, limit: number | 'all' | 'cancel') {
+    try {
+      const res = await fetch(`/api/analysis/jobs/${jobId}/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(limit === 'cancel' ? { cancel: true } : { limit }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      if (data.card) upsertCard(data.card);
+    } catch (e) {
+      setNotice((e as Error).message);
     }
   }
 
@@ -257,10 +277,107 @@ export default function AnalysisView() {
               onOpen={() => setOpenUser(c.username)}
               onRefresh={(mode) => void create(c.username, mode)}
               onDelete={() => void remove(c.username)}
+              onConfirm={(limit) => void pickLimit(c.job!.id, limit)}
             />
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// --- big account: how many posts to collect -------------------------------------------------
+const LIMIT_OPTIONS = [500, 1000, 2000];
+const COMMENT_CREDITS = 30; // comments of the top posts, about the same for any size
+const SC_USD_PER_CREDIT = 47 / 25_000; // ScrapeCreators pack: $47 = 25 000 credits
+const MAX_CUSTOM = 10_000; // = LIMIT_ALL on the server
+const fmtInt = (n: number) => Math.round(n).toLocaleString('ru-RU');
+/** 1 пост · 3 поста · 5 постов */
+function plural(n: number, [one, few, many]: [string, string, string]) {
+  const a = Math.abs(Math.round(n)) % 100;
+  const b = a % 10;
+  if (a > 10 && a < 20) return many;
+  if (b === 1) return one;
+  if (b >= 2 && b <= 4) return few;
+  return many;
+}
+const posts = (n: number) => `${fmtInt(n)} ${plural(n, ['пост', 'поста', 'постов'])}`;
+const creds = (n: number) => `${fmtInt(n)} ${plural(n, ['кредит', 'кредита', 'кредитов'])}`;
+
+function ConfirmBox({
+  estimate: e,
+  onPick,
+}: {
+  estimate: NonNullable<NonNullable<AccountCard['job']>['estimate']>;
+  onPick: (limit: number | 'all' | 'cancel') => void;
+}) {
+  const [custom, setCustom] = useState('');
+  const credits = (n: number) => Math.ceil(n / 12) + COMMENT_CREDITS;
+  const usd = (n: number) => `$${((credits(n) * SC_USD_PER_CREDIT) || 0).toFixed(2)}`;
+  const depth = (n: number) => {
+    if (!e.per_day) return '';
+    const d = Math.round(n / e.per_day);
+    return d < 60 ? `≈ ${d} дн.` : `≈ ${Math.round(d / 30)} мес.`;
+  };
+  const cost = (n: number) => [depth(n), `~${fmtInt(credits(n))} кр.`, `~${usd(n)}`].filter(Boolean).join(' · ');
+  const opts = LIMIT_OPTIONS.filter((n) => n < e.year);
+  const customN = Math.min(MAX_CUSTOM, Math.max(0, Math.round(Number(custom.replace(/\s/g, '')) || 0)));
+  const customOk = customN >= 12;
+  const btn = 'rounded-lg border border-edge bg-white px-2.5 py-1.5 text-left hover:border-accent';
+  return (
+    <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs">
+      <p className="text-amber-900">
+        За год {e.exact ? '' : 'примерно '}
+        <b>{posts(e.year)}</b> (~{e.per_day.toLocaleString('ru-RU')} в день). Весь год — ~{creds(credits(e.year))} (~
+        {usd(e.year)}) и долгая AI-разметка. Сколько последних постов собрать?
+      </p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {opts.map((n) => (
+          <button key={n} onClick={() => onPick(n)} className={btn}>
+            <span className="font-medium">Последние {posts(n)}</span>
+            <span className="block text-[11px] text-muted">{cost(n)}</span>
+          </button>
+        ))}
+        <button onClick={() => onPick('all')} className={btn}>
+          <span className="font-medium">Весь год ~{posts(e.year)}</span>
+          <span className="block text-[11px] text-muted">{cost(e.year)}</span>
+        </button>
+      </div>
+      <form
+        className="mt-2 flex flex-wrap items-center gap-2"
+        onSubmit={(ev) => {
+          ev.preventDefault();
+          if (customOk) onPick(customN >= e.year ? 'all' : customN);
+        }}
+      >
+        <span className="text-amber-900">Своё число:</span>
+        <input
+          value={custom}
+          onChange={(ev) => setCustom(ev.target.value)}
+          inputMode="numeric"
+          placeholder="например, 4000"
+          className="h-8 w-32 rounded-lg border border-edge bg-white px-2"
+        />
+        <button
+          type="submit"
+          disabled={!customOk}
+          className="h-8 rounded-lg bg-accent px-3 font-medium text-white disabled:opacity-40"
+        >
+          Собрать
+        </button>
+        {customOk && (
+          <span className="text-muted">
+            {customN >= e.year ? `весь год ~${posts(e.year)}` : posts(customN)} · {cost(Math.min(customN, e.year))}
+            {Number(custom.replace(/\s/g, '')) > MAX_CUSTOM ? ` · максимум ${fmtInt(MAX_CUSTOM)}` : ''}
+          </span>
+        )}
+        <button type="button" onClick={() => onPick('cancel')} className="ml-auto px-2 text-muted hover:text-red-600">
+          Отмена
+        </button>
+      </form>
+      <p className="mt-2 text-[11px] text-amber-800/70">
+        Деньги — только сбор в ScrapeCreators ($47 за 25 000 кредитов). AI-разметка оплачивается отдельно.
+      </p>
     </div>
   );
 }
@@ -271,11 +388,13 @@ function AccountCardView({
   onOpen,
   onRefresh,
   onDelete,
+  onConfirm,
 }: {
   card: AccountCard;
   onOpen: () => void;
   onRefresh: (mode: 'update' | 'full') => void;
   onDelete: () => void;
+  onConfirm: (limit: number | 'all' | 'cancel') => void;
 }) {
   const running = isActive(c.job?.status);
   const failed = c.job?.status === 'failed';
@@ -303,6 +422,11 @@ function AccountCardView({
       </div>
 
       {running && <p className="mt-3 text-xs text-accent">{c.job?.progress ?? 'В работе…'}</p>}
+      {c.job?.status === 'confirm' && c.job.estimate && (
+        <div onClick={(e) => e.stopPropagation()}>
+          <ConfirmBox estimate={c.job.estimate} onPick={onConfirm} />
+        </div>
+      )}
       {failed && <p className="mt-3 text-xs text-red-600">Ошибка: {c.job?.error}</p>}
 
       {c.summary && (

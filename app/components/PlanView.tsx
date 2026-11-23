@@ -4,12 +4,13 @@
 // day carousels written by Claude (cover hook + questions + comment-bait last slide +
 // caption). Calendar per account; every carousel can be edited, rewritten, copied, sent to
 // «Слайды» (→ «в Слайдах»; «Скачать все» there marks it «готово»). While the tab is open it
-// keeps writing plans that are still generating.
+// keeps writing plans that are still generating; the background worker writes them too.
 //
 // Version history:
 //   v0.1.0 (2026-11-22) — initial.
 //   v0.2.0 (2026-11-23) — universal CTA texts with a keyword (MORE / LIST / SEND), one per line
 //                         in the form; card shows the keyword.
+//   v0.2.1 (2026-11-23) — plans are written in the background (worker), copy updated.
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -348,7 +349,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           Отмена
         </button>
         <span className="text-xs text-muted">
-          ≈ ${(total * PER_CAROUSEL_USD).toFixed(1)} · ≈ {Math.max(1, Math.round((total / 8) * 0.75))} мин, пока вкладка открыта.
+          ≈ ${(total * PER_CAROUSEL_USD).toFixed(1)} · ≈ {Math.max(1, Math.round((total / 8) * 0.75))} мин, пишется в фоне.
           Каждая карусель: обложка + {qMin}–{qMax} вопросов + призыв.
         </span>
       </div>

@@ -7,10 +7,11 @@
 // Exceptions (always allowed):
 //   /login           — the login page
 //   /api/auth/*      — login/logout endpoints
-//   /api/cron/*      — the cron runs with its own ?secret, carries no cookie
+//   /api/cron/*      — cron / background worker, each checks its own secret, no cookie
 //
 // Version history:
 //   v0.1.0 (2026-11-17) — cookie check + redirect/401.
+//   v0.1.1 (2026-11-23) — /api/cron/step (background worker) noted.
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { AUTH_COOKIE, expectedAuthToken, safeEqual } from '@/lib/auth';

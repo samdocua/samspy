@@ -4,6 +4,7 @@
 //   v0.4.0 (2026-11-18) — jobs, posts, job↔post links, slides.
 //   v0.7.0 (2026-11-20) — migration-005: repeat check fields, outlier, 'stats' job step,
 //                         authors cache, posts base list types.
+//   v0.8.0 (2026-11-23) — job.scrape: ScrapeCreators «to finish» lists (migration-010, column scrape).
 
 export type CarouselJobStatus =
   | 'apify' | 'ocr' | 'check' | 'escalate' | 'stats' | 'done' | 'failed';
@@ -19,8 +20,17 @@ export interface CarouselJob {
   stats_run_id: string | null;
   stats_dataset_id: string | null;
   stats_started_at: string | null;
+  scrape: CarouselFetch | null;
   created_at: string;
   updated_at: string;
+}
+
+/** ScrapeCreators state of a job: what came, what is waiting for another try. */
+export interface CarouselFetch {
+  provider: 'sc';
+  done: string[]; // shortcodes collected
+  fails: Record<string, { n: number; at: number; err?: string }>; // posts to finish
+  authors?: Record<string, { n: number; at: number; err?: string }>; // author medians to finish
 }
 
 export type CarouselPostStatus = 'pending' | 'ready' | 'failed';
