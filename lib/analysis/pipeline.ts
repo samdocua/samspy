@@ -47,6 +47,11 @@
 //   v0.5.1 (2026-11-23) — card summary keeps the period it covers (first / last post dates).
 //   v0.5.2 (2026-11-23) — loadPosts: keyset pages of 400 with retries (10 000-post jobs timed out
 //                         on offset pages of 1000).
+//   v0.5.3 (2026-11-23) — load: AI steps read posts without the heavy columns (slide / image /
+//                         video links), the texts step fetches them only for its few posts; the
+//                         tag step reads only the next untagged posts once the rubrics exist;
+//                         the card list reads light job columns; a failed list read throws
+//                         (the tab showed «нет досье» on a timeout).
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -127,6 +132,11 @@ const JOB_COLS =
   'id,username,status,mode,base_job_id,period_from,profile_run_id,profile_dataset_id,posts_run_id,posts_dataset_id,stats,error,locked_until,comments_run_id,comments_dataset_id,ai,ai_meta,ai_error,scrape,created_at,updated_at';
 const POST_COLS =
   'id,job_id,shortcode,url,kind,posted_at,caption,likes,comments,views,duration,slides,is_pinned,coauthors,owner,has_cta,display_url,video_url,thumb_path,thumb_done,slide_urls,title_ru,rubric,hook,format,breadth,first_line,tagged,transcript,ocr_text,text_done,breakdown';
+// the same without the heavy links — enough for stats, ranking and AI steps
+const LITE_COLS =
+  'id,job_id,shortcode,url,kind,posted_at,caption,likes,comments,views,duration,slides,is_pinned,coauthors,has_cta,thumb_done,title_ru,rubric,hook,format,breadth,first_line,tagged,transcript,ocr_text,text_done,breakdown';
+// card list: no stats / dossier texts
+const LIST_JOB_COLS = 'id,username,status,mode,error,scrape,period_from,created_at,updated_at';
 // AI results of a post — carried over on a quick update
 const AI_FIELDS = ['title_ru', 'rubric', 'hook', 'format', 'breadth', 'first_line', 'tagged', 'transcript', 'ocr_text', 'text_done', 'breakdown'] as const;
 
@@ -610,7 +620,7 @@ async function insertComments(sb: SupabaseClient, rows: ReturnType<typeof commen
  */
 async function carryOver(sb: SupabaseClient, job: AnalysisJob, fresh: Set<string>) {
   const fromMs = new Date(job.period_from).getTime();
-  const old = await loadPosts(sb, job.base_job_id!);
+  const old = await loadPosts(sb, job.base_job_id!, POST_COLS);
   const rows = old
     .filter((p) => !fresh.has(p.shortcode))
     .filter((p) => p.is_pinned || !p.posted_at || new Date(p.posted_at).getTime() >= fromMs)
@@ -690,11 +700,11 @@ const LOAD_PAGE = 400;
  * instead of offsets: on 10 000-post jobs offset pages of 1000 wide rows hit the 8 s statement
  * timeout. A page that still times out is retried twice.
  */
-async function loadPosts(sb: SupabaseClient, jobId: string): Promise<AnalysisPost[]> {
+async function loadPosts(sb: SupabaseClient, jobId: string, cols: string = LITE_COLS): Promise<AnalysisPost[]> {
   const out: AnalysisPost[] = [];
   const page = async (after: AnalysisPost | null) => {
     for (let attempt = 0; ; attempt++) {
-      let q = sb.from('analysis_posts').select(POST_COLS).eq('job_id', jobId).not('posted_at', 'is', null);
+      let q = sb.from('analysis_posts').select(cols).eq('job_id', jobId).not('posted_at', 'is', null);
       if (after) q = q.or(`posted_at.lt.${after.posted_at},and(posted_at.eq.${after.posted_at},id.lt.${after.id})`);
       const { data, error } = await q
         .order('posted_at', { ascending: false })
@@ -716,7 +726,7 @@ async function loadPosts(sb: SupabaseClient, jobId: string): Promise<AnalysisPos
   // posts without a date (rare) go last
   const { data: undated } = await sb
     .from('analysis_posts')
-    .select(POST_COLS)
+    .select(cols)
     .eq('job_id', jobId)
     .is('posted_at', null)
     .returns<AnalysisPost[]>();
@@ -764,6 +774,21 @@ async function rankedPosts(sb: SupabaseClient, job: AnalysisJob): Promise<(Analy
     .filter((p) => !p.posted_at || new Date(p.posted_at).getTime() >= fromMs)
     .map((p) => ({ ...p, ratio: job.stats ? ratioOf(p, job.stats) : null }))
     .sort((a, b) => (b.ratio ?? -1) - (a.ratio ?? -1));
+}
+
+/** Next untagged posts of the period (enough for one step), with their ratio. */
+async function untaggedPosts(sb: SupabaseClient, job: AnalysisJob): Promise<(AnalysisPost & { ratio: number | null })[]> {
+  const { data, error } = await sb
+    .from('analysis_posts')
+    .select(LITE_COLS)
+    .eq('job_id', job.id)
+    .eq('tagged', false)
+    .or(`posted_at.gte.${new Date(job.period_from).toISOString()},posted_at.is.null`)
+    .order('posted_at', { ascending: false })
+    .limit(TAG_BATCH * 12)
+    .returns<AnalysisPost[]>();
+  if (error) throw new Error(error.message);
+  return (data ?? []).map((p) => ({ ...p, ratio: job.stats ? ratioOf(p, job.stats) : null }));
 }
 
 const textOf = (p: AnalysisPost) => p.transcript || p.ocr_text || null;
@@ -899,6 +924,17 @@ async function stepTexts(sb: SupabaseClient, job: AnalysisJob, deadline: number)
   const ranked = await rankedPosts(sb, job);
   const reels = ranked.filter((p) => p.kind === 'reel').slice(0, TRANSCRIBE_TOP);
   const carousels = ranked.filter((p) => p.kind === 'carousel').slice(0, OCR_TOP);
+  // links (image / video / slides) only for these few posts
+  const ids = [...reels, ...carousels].map((p) => p.id);
+  if (ids.length) {
+    const { data: links } = await sb
+      .from('analysis_posts')
+      .select('id,display_url,video_url,slide_urls')
+      .in('id', ids)
+      .returns<Pick<AnalysisPost, 'id' | 'display_url' | 'video_url' | 'slide_urls'>[]>();
+    const byId = new Map((links ?? []).map((l) => [l.id, l]));
+    for (const p of [...reels, ...carousels]) Object.assign(p, byId.get(p.id) ?? { slide_urls: [] });
+  }
   // to do: never tried, or tried but no text came out and the cover was not read yet
   const noSpeech = (p: AnalysisPost) => !p.transcript || p.transcript.length < 20;
   const todo = [...reels, ...carousels].filter(
@@ -938,7 +974,8 @@ async function stepTexts(sb: SupabaseClient, job: AnalysisJob, deadline: number)
 
 /** Rubric vocabulary (once per account line), then tags for untagged posts. true = more. */
 async function stepTag(sb: SupabaseClient, job: AnalysisJob, deadline: number): Promise<boolean> {
-  const ranked = await rankedPosts(sb, job);
+  // rubrics known → only the next untagged posts are needed, not the whole account
+  const ranked = job.ai_meta ? await untaggedPosts(sb, job) : await rankedPosts(sb, job);
   if (!job.ai_meta) {
     // a quick update keeps the rubrics of the previous dossier, so tags stay comparable
     let vocab = null;
@@ -1138,11 +1175,12 @@ async function progressOf(sb: SupabaseClient, job: AnalysisJob): Promise<string 
   }
   if (job.status === 'texts') return 'AI-разбор: расшифровываю топовые ролики и карусели…';
   if (job.status === 'tag') {
-    const [{ count: total }, { count: done }] = await Promise.all([
-      sb.from('analysis_posts').select('id', { count: 'exact', head: true }).eq('job_id', job.id),
-      sb.from('analysis_posts').select('id', { count: 'exact', head: true }).eq('job_id', job.id).eq('tagged', true),
-    ]);
-    return `AI-разбор: размечаю посты ${done ?? 0} из ${total ?? 0}…`;
+    const { count: left } = await sb
+      .from('analysis_posts')
+      .select('id', { count: 'exact', head: true })
+      .eq('job_id', job.id)
+      .eq('tagged', false);
+    return `AI-разбор: размечаю посты, осталось ${(left ?? 0).toLocaleString('ru-RU')}…`;
   }
   if (job.status === 'breakdown') return 'AI-разбор: разбираю топовые посты…';
   if (job.status === 'synth') return 'AI-разбор: пишу досье…';
@@ -1157,21 +1195,23 @@ async function progressOf(sb: SupabaseClient, job: AnalysisJob): Promise<string 
 }
 
 export async function listCards(sb: SupabaseClient): Promise<AccountCard[]> {
-  const { data: accounts } = await sb
+  const { data: accounts, error: accErr } = await sb
     .from('analysis_accounts')
     .select('*')
     .order('updated_at', { ascending: false })
     .returns<AnalysisAccount[]>();
+  if (accErr) throw new Error(accErr.message);
   if (!accounts?.length) return [];
-  const { data: jobs } = await sb
+  const { data: jobs, error: jobsErr } = await sb
     .from('analysis_jobs')
-    .select(JOB_COLS)
+    .select(LIST_JOB_COLS)
     .in(
       'username',
       accounts.map((a) => a.username)
     )
     .order('created_at', { ascending: false })
     .returns<AnalysisJob[]>();
+  if (jobsErr) throw new Error(jobsErr.message);
   const latest = new Map<string, AnalysisJob>();
   for (const j of jobs ?? []) if (!latest.has(j.username)) latest.set(j.username, j);
 
@@ -1222,7 +1262,7 @@ export async function getDossier(sb: SupabaseClient, username: string): Promise<
     .maybeSingle<AnalysisJob>();
   if (!job?.stats) return null;
   const stats = job.stats;
-  const posts = await loadPosts(sb, job.id);
+  const posts = await loadPosts(sb, job.id, POST_COLS);
   const fromMs = new Date(stats.period.from).getTime();
   const inPeriod = posts.filter((p) => !p.posted_at || new Date(p.posted_at).getTime() >= fromMs);
 

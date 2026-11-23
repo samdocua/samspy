@@ -30,6 +30,7 @@
 //   v0.4.3 (2026-11-23) — card line «Период: 23.11.2025 – 22.11.2026 · 661 пост · обновлено …».
 //   v0.4.4 (2026-11-23) — posts per day instead of per week (card + dossier); card median says
 //                         what it is: «медиана просмотров» (reels) / «медиана лайков» (carousels).
+//   v0.4.5 (2026-11-23) — a failed list load says so instead of «нет ни одного досье».
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -132,7 +133,7 @@ export default function AnalysisView() {
       const res = await fetch('/api/analysis');
       const data = await res.json();
       if (data.cards) replaceCards(data.cards);
-      else if (data.error) setNotice(data.error);
+      else if (data.error) setNotice(`Не удалось загрузить досье (${data.error}). Обнови страницу через минуту.`);
     } finally {
       setLoading(false);
     }
