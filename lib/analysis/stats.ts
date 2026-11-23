@@ -11,6 +11,7 @@
 //   v0.3.1 (2026-11-22) — groupStats(): the metric follows the group's main format (views of
 //                         reels if most of it is reels, else likes of carousels / photos) +
 //                         metric_count (how many posts the figure is from).
+//   v0.5.2 (2026-11-23) — cardSummary: median of the main format + median_kind (views / likes).
 
 import type {
   AccountStats,
@@ -212,7 +213,8 @@ export function computeStats(
 export function cardSummary(s: AccountStats): CardSummary {
   const main = s.reels.count >= Math.max(1, s.carousels.count + s.photos.count) / 3 ? s.reels : s.carousels;
   return {
-    median_views: s.reels.median,
+    median_views: main.median,
+    median_kind: main === s.reels ? 'views' : 'likes',
     outliers_pct: main.count ? Math.round((100 * main.outliers) / main.count) : null,
     per_week: s.per_week,
     trend: main.trend,

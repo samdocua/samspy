@@ -11,6 +11,7 @@
 //   v0.5.0 (2026-11-23) — status 'confirm': a full collection waits for the post limit when the
 //                         year looks big (scrape.estimate / scrape.limit); card.job.estimate.
 //   v0.5.1 (2026-11-23) — CardSummary.period: dates the card numbers cover.
+//   v0.5.2 (2026-11-23) — CardSummary.median_kind: card median follows the main format.
 
 export type AnalysisStatus =
   | 'confirm'
@@ -262,7 +263,8 @@ export interface AccountStats {
 
 /** Small set of numbers for the account card on the tab's home screen. */
 export interface CardSummary {
-  median_views: number | null;
+  median_views: number | null; // median of the main format: reels views or carousel likes
+  median_kind?: 'views' | 'likes'; // what median_views is (older summaries: views)
   outliers_pct: number | null;
   per_week: number;
   trend: number | null;
