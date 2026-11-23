@@ -13,6 +13,8 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-23) — initial: profile, user posts (paged), single post, comments (paged).
+//   v0.1.1 (2026-11-23) — pinned posts: the feed does not always flag them, so on the first page
+//                         a post among the first 3 that is older than a post below it is pinned.
 
 const API = 'https://api.scrapecreators.com';
 const TRY_DELAYS = [0, 1500, 4000];
@@ -231,9 +233,23 @@ export async function scPostsPage(handle: string, cursor?: string | null, opts?:
   const params: Record<string, string> = { handle };
   if (cursor) params.next_max_id = cursor;
   const body = await scGet<any>('/v2/instagram/user/posts', params, opts);
-  const items = (Array.isArray(body?.items) ? body.items : []).filter((m: any) => m?.code).map(fromFeed);
+  const items: IgPost[] = (Array.isArray(body?.items) ? body.items : []).filter((m: any) => m?.code).map(fromFeed);
+  if (!cursor) markPinned(items);
   const next = body?.more_available !== false && body?.next_max_id ? String(body.next_max_id) : null;
   return { items, next };
+}
+
+/**
+ * Pinned posts (up to 3) sit on top of the first page, out of date order. The feed flag is not
+ * always there, so: a post among the first 3 that is older than some post below it is pinned.
+ */
+function markPinned(items: IgPost[]) {
+  const ms = items.map((it) => (it.timestamp ? new Date(it.timestamp).getTime() : NaN));
+  for (let i = 0; i < Math.min(3, items.length); i++) {
+    if (items[i].isPinned || Number.isNaN(ms[i])) continue;
+    const newerBelow = ms.slice(i + 1).some((t) => !Number.isNaN(t) && t > ms[i]);
+    if (newerBelow) items[i].isPinned = true;
+  }
 }
 
 /** One post by link (with the first ~12 comments). */
