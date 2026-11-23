@@ -53,3 +53,8 @@ end;
 $$;
 
 revoke all on function public.samspy_tick() from public, anon, authenticated;
+
+-- 2026-11-24: the partial index for untagged posts, built once the load was gone
+-- (create index concurrently — not inside a migration transaction):
+-- create index concurrently if not exists idx_analysis_posts_untagged
+--   on public.analysis_posts (job_id, posted_at desc) where not tagged;

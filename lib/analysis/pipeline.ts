@@ -52,6 +52,8 @@
 //                         tag step reads only the next untagged posts once the rubrics exist;
 //                         the card list reads light job columns; a failed list read throws
 //                         (the tab showed «нет досье» on a timeout).
+//   v0.5.4 (2026-11-24) — a failed AI step is retried on the next call (up to 5 in a row) instead
+//                         of being skipped at once: one timeout ended a 10 000-post tagging run.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -127,6 +129,7 @@ const BREAKDOWN_CAROUSELS = envNum('ANALYSIS_BREAKDOWN_CAROUSELS', 5, 0, 20);
 const TAG_BATCH = 25;
 const TEXT_CONCURRENCY = 4;
 const AI_STEPS: AnalysisStatus[] = ['comments', 'texts', 'tag', 'breakdown', 'synth'];
+const AI_STEP_TRIES = 5; // failures in a row before an AI step is skipped
 
 const JOB_COLS =
   'id,username,status,mode,base_job_id,period_from,profile_run_id,profile_dataset_id,posts_run_id,posts_dataset_id,stats,error,locked_until,comments_run_id,comments_dataset_id,ai,ai_meta,ai_error,scrape,created_at,updated_at';
@@ -300,14 +303,28 @@ export async function stepAnalysis(sb: SupabaseClient, jobId: string): Promise<b
         else if (status === 'tag') next = (await stepTag(sb, job, deadline)) ? 'tag' : 'breakdown';
         else if (status === 'breakdown') next = (await stepBreakdown(sb, job, deadline)) ? 'breakdown' : 'synth';
         else if (status === 'synth') next = await stepSynth(sb, job);
+        // a step call that went through clears the step's failure count
+        if (job.scrape?.ai_fails?.[status]) {
+          delete job.scrape.ai_fails[status];
+          await setJob(sb, jobId, { scrape: job.scrape });
+        }
       } catch (e) {
         if (!AI_STEPS.includes(status)) throw e;
-        // AI part failed: keep the numbers, note the error, go on to the next AI step
+        // AI part failed: a passing error (timeout, network) is retried on the next call, up to
+        // AI_STEP_TRIES times in a row; then the error is noted and the next AI step goes on
+        const fails = job.scrape ? (job.scrape.ai_fails ??= {}) : null;
+        if (fails && (fails[status] ?? 0) + 1 < AI_STEP_TRIES) {
+          fails[status] = (fails[status] ?? 0) + 1;
+          await setJob(sb, jobId, { scrape: job.scrape });
+          break; // same step, next call
+        }
+        if (fails) delete fails[status];
         const msg = `${status}: ${errMsg(e)}`;
         job.ai_error = job.ai_error ? `${job.ai_error} · ${msg}` : msg;
-        await setJob(sb, jobId, { ai_error: job.ai_error });
+        await setJob(sb, jobId, { ai_error: job.ai_error, ...(job.scrape ? { scrape: job.scrape } : {}) });
         next = AI_STEPS[AI_STEPS.indexOf(status) + 1] ?? 'done';
       }
+
 
       if (next !== status) {
         await setJob(sb, jobId, { status: next });

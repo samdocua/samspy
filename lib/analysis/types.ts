@@ -12,6 +12,7 @@
 //                         year looks big (scrape.estimate / scrape.limit); card.job.estimate.
 //   v0.5.1 (2026-11-23) — CardSummary.period: dates the card numbers cover.
 //   v0.5.2 (2026-11-23) — CardSummary.median_kind: card median follows the main format.
+//   v0.5.3 (2026-11-24) — FetchState.ai_fails: AI step failures in a row.
 
 export type AnalysisStatus =
   | 'confirm'
@@ -55,6 +56,8 @@ export interface FetchState {
   estimate?: PostsEstimate;
   /** chosen post limit (full collection of a big account) */
   limit?: number;
+  /** AI step failures in a row (step → count); a step is retried before it is skipped */
+  ai_fails?: Record<string, number>;
   done?: boolean;
   /** failed rounds of the current feed request in a row */
   fails: number;
