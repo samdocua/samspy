@@ -6,6 +6,8 @@
 //   v0.3.0 (2026-11-22) — stage 2 (migration-008): AI tags / texts / breakdown per post,
 //                         comments, dossier texts, rubric + hook stats.
 //   v0.3.2 (2026-11-22) — rubric / hook stats per content type (KindTab).
+//   v0.4.0 (2026-11-23) — job.scrape: ScrapeCreators collection state (migration-010, column scrape);
+//                         status 'apify' now means «collecting» for both scrapers.
 
 export type AnalysisStatus =
   | 'apify'
@@ -20,6 +22,33 @@ export type AnalysisStatus =
   | 'done'
   | 'failed';
 export type PostKind = 'reel' | 'carousel' | 'photo';
+
+/** One retry record of the «to finish» list: tries so far + time of the last one. */
+export interface RetryMark {
+  n: number;
+  at: number;
+  err?: string;
+}
+
+/** ScrapeCreators collection state (job.scrape); null on Apify jobs. */
+export interface FetchState {
+  provider: 'sc';
+  since: string; // posts older than this are not collected (pinned ones are)
+  profile?: import('@/lib/scrape/sc').IgProfile | null;
+  cursor?: string | null;
+  pages: number;
+  posts: number;
+  done?: boolean;
+  /** failed rounds of the current feed request in a row */
+  fails: number;
+  retry_at?: number;
+  last_error?: string;
+  comments?: {
+    targets: string[];
+    done: string[];
+    fails: Record<string, RetryMark>;
+  };
+}
 export type JobMode = 'full' | 'update';
 export type KindTab = 'all' | PostKind;
 
@@ -42,6 +71,7 @@ export interface AnalysisJob {
   ai: DossierAI | null;
   ai_meta: Vocab | null;
   ai_error: string | null;
+  scrape: FetchState | null;
   created_at: string;
   updated_at: string;
 }

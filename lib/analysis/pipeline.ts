@@ -33,12 +33,20 @@
 //                         from the cover frame, carousels without slide links → cover text.
 //   v0.3.2 (2026-11-22) — dossier groups per content type (all / reels / carousels / photos);
 //                         dossier texts get rubric stats per format too; × figures rounded.
+//   v0.4.0 (2026-11-23) — ScrapeCreators instead of Apify (when its key is set, SCRAPER=apify
+//                         switches back): 'apify' step pages the feed itself (12 posts a page,
+//                         saved as they come, cursor in job.scrape); comments 2 pages per top
+//                         post. «To finish» list: a call is retried 3× at once, then the post /
+//                         page goes back in line and is retried later (20–60 s apart, up to 3
+//                         rounds for comments, 6 for the feed). A feed that still fails stops
+//                         the job; «Повторить» resumes from the saved cursor.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
 import {
   getDataset,
   getRun,
+  MAX_POSTS,
   parseUsername,
   RUN_FAILED,
   startComments,
@@ -57,6 +65,7 @@ import {
   transcribe,
   type PostForAI,
 } from './ai';
+import { scCommentsPage, scEnabled, ScFatal, ScNotFound, scPostsPage, scProfile } from '@/lib/scrape/sc';
 import { cardSummary, computeStats, groupStats, hasCta, metricOf, ratioOf } from './stats';
 import type {
   AccountCard,
@@ -65,6 +74,7 @@ import type {
   AnalysisPost,
   AnalysisStatus,
   Dossier,
+  FetchState,
   JobMode,
   KindTab,
   PostKind,
@@ -86,7 +96,13 @@ const STEP_HARD_MS = 40_000; // do not start a new AI batch after this
 const envNum = (k: string, d: number, min: number, max: number) =>
   Math.max(min, Math.min(max, Number(process.env[k]) || d));
 const COMMENT_POSTS = envNum('ANALYSIS_COMMENT_POSTS', 15, 0, 50);
-const COMMENTS_PER_POST = envNum('ANALYSIS_COMMENTS_PER_POST', 30, 5, 100);
+const COMMENTS_PER_POST = envNum('ANALYSIS_COMMENTS_PER_POST', 24, 5, 100);
+// ScrapeCreators «to finish» rounds
+const FEED_ROUNDS = 6; // feed page / profile: rounds of 3 tries before the job stops
+const COMMENT_ROUNDS = 3; // comments of one post: rounds of 3 tries before it is skipped
+const RETRY_GAP_MS = 20_000; // pause before the next round grows with each failure
+const SC_COMMENT_PAGE = 12;
+const SC_CONCURRENCY = 3;
 const TRANSCRIBE_TOP = envNum('ANALYSIS_TRANSCRIBE_TOP', 30, 0, 100);
 const OCR_TOP = envNum('ANALYSIS_OCR_TOP', 10, 0, 40);
 const BREAKDOWN_REELS = envNum('ANALYSIS_BREAKDOWN_REELS', 15, 0, 40);
@@ -96,7 +112,7 @@ const TEXT_CONCURRENCY = 4;
 const AI_STEPS: AnalysisStatus[] = ['comments', 'texts', 'tag', 'breakdown', 'synth'];
 
 const JOB_COLS =
-  'id,username,status,mode,base_job_id,period_from,profile_run_id,profile_dataset_id,posts_run_id,posts_dataset_id,stats,error,locked_until,comments_run_id,comments_dataset_id,ai,ai_meta,ai_error,created_at,updated_at';
+  'id,username,status,mode,base_job_id,period_from,profile_run_id,profile_dataset_id,posts_run_id,posts_dataset_id,stats,error,locked_until,comments_run_id,comments_dataset_id,ai,ai_meta,ai_error,scrape,created_at,updated_at';
 const POST_COLS =
   'id,job_id,shortcode,url,kind,posted_at,caption,likes,comments,views,duration,slides,is_pinned,coauthors,owner,has_cta,display_url,video_url,thumb_path,thumb_done,slide_urls,title_ru,rubric,hook,format,breadth,first_line,tagged,transcript,ocr_text,text_done,breakdown';
 // AI results of a post — carried over on a quick update
@@ -141,6 +157,23 @@ export async function createAnalysis(
     .returns<AnalysisJob[]>();
   if (running?.[0]) return running[0];
 
+  // «Повторить» after the feed stopped mid-way → continue from the saved cursor
+  if (scEnabled()) {
+    const { data: last } = await sb
+      .from('analysis_jobs')
+      .select(JOB_COLS)
+      .eq('username', username)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .returns<AnalysisJob[]>();
+    const j = last?.[0];
+    if (j && j.status === 'failed' && j.scrape?.provider === 'sc' && !j.scrape.done && j.scrape.profile) {
+      const scrape: FetchState = { ...j.scrape, fails: 0, retry_at: undefined };
+      await setJob(sb, j.id, { status: 'apify', error: null, scrape });
+      return { ...j, status: 'apify', error: null, scrape };
+    }
+  }
+
   const from = new Date(Date.now() - YEAR);
   const fromDay = from.toISOString().slice(0, 10);
 
@@ -173,7 +206,20 @@ export async function createAnalysis(
     }
   }
 
-  const [profile, posts] = await Promise.all([startProfile(username), startPosts(username, scrapeFrom)]);
+  let runs: Record<string, unknown>;
+  if (scEnabled()) {
+    // ScrapeCreators: nothing to start, the step pages the feed itself
+    const scrape: FetchState = { provider: 'sc', since: `${scrapeFrom}T00:00:00.000Z`, pages: 0, posts: 0, fails: 0 };
+    runs = { scrape };
+  } else {
+    const [profile, posts] = await Promise.all([startProfile(username), startPosts(username, scrapeFrom)]);
+    runs = {
+      profile_run_id: profile.id,
+      profile_dataset_id: profile.defaultDatasetId,
+      posts_run_id: posts.id,
+      posts_dataset_id: posts.defaultDatasetId,
+    };
+  }
 
   const { data, error } = await sb
     .from('analysis_jobs')
@@ -183,10 +229,7 @@ export async function createAnalysis(
       mode,
       base_job_id: baseJobId,
       period_from: `${fromDay}T00:00:00.000Z`,
-      profile_run_id: profile.id,
-      profile_dataset_id: profile.defaultDatasetId,
-      posts_run_id: posts.id,
-      posts_dataset_id: posts.defaultDatasetId,
+      ...runs,
     })
     .select(JOB_COLS)
     .single<AnalysisJob>();
@@ -223,11 +266,12 @@ export async function stepAnalysis(sb: SupabaseClient, jobId: string): Promise<b
     while (Date.now() < deadline && ACTIVE.includes(status)) {
       let next: AnalysisStatus = status;
       try {
-        if (status === 'apify') next = await stepApify(sb, job);
+        if (status === 'apify') next = job.scrape ? await stepFetch(sb, job, deadline) : await stepApify(sb, job);
         else if (status === 'save') next = await stepSave(sb, job);
         else if (status === 'thumbs') next = (await stepThumbs(sb, job)) ? 'thumbs' : 'stats';
         else if (status === 'stats') next = await stepStats(sb, job);
-        else if (status === 'comments') next = await stepComments(sb, job);
+        else if (status === 'comments')
+          next = job.scrape ? await stepCommentsSc(sb, job, deadline) : await stepComments(sb, job);
         else if (status === 'texts') next = (await stepTexts(sb, job, deadline)) ? 'texts' : 'tag';
         else if (status === 'tag') next = (await stepTag(sb, job, deadline)) ? 'tag' : 'breakdown';
         else if (status === 'breakdown') next = (await stepBreakdown(sb, job, deadline)) ? 'breakdown' : 'synth';
@@ -246,7 +290,7 @@ export async function stepAnalysis(sb: SupabaseClient, jobId: string): Promise<b
         job.status = next;
         status = next;
       } else if (status === 'apify' || status === 'comments') {
-        break; // runs still going on Apify's side
+        break; // runs still going on Apify's side / ScrapeCreators: out of time or waiting to retry
       }
     }
   } catch (e) {
@@ -255,6 +299,78 @@ export async function stepAnalysis(sb: SupabaseClient, jobId: string): Promise<b
     await sb.from('analysis_jobs').update({ locked_until: null }).eq('id', jobId);
   }
   return true;
+}
+
+// --- ScrapeCreators collection ------------------------------------------------------------
+
+async function saveFetch(sb: SupabaseClient, job: AnalysisJob) {
+  await setJob(sb, job.id, { scrape: job.scrape });
+}
+
+const retryWait = (fails: number) => Math.min(60_000, RETRY_GAP_MS * fails);
+
+/** Profile + feed pages until the period start. Posts are saved page by page. */
+async function stepFetch(sb: SupabaseClient, job: AnalysisJob, deadline: number): Promise<AnalysisStatus> {
+  const f = job.scrape!;
+  if (f.retry_at && Date.now() < f.retry_at) return 'apify';
+  const until = deadline - 3_000;
+  try {
+    if (!f.profile) {
+      const profile = await scProfile(job.username, { until });
+      if (profile.isPrivate) {
+        await failJob(sb, job.id, 'Аккаунт закрытый — посты не видны.');
+        return 'failed';
+      }
+      f.profile = profile;
+      await saveFetch(sb, job);
+    }
+    const sinceMs = new Date(f.since).getTime();
+    while (!f.done && Date.now() < deadline - 6_000) {
+      const page = await scPostsPage(job.username, f.cursor, { until });
+      const keep = page.items.filter(
+        (it) => it.isPinned || !it.timestamp || new Date(it.timestamp).getTime() >= sinceMs
+      );
+      if (keep.length) await upsertPosts(sb, postRows(job, keep));
+      f.pages += 1;
+      f.posts += keep.length;
+      f.cursor = page.next;
+      f.fails = 0;
+      f.retry_at = undefined;
+      f.last_error = undefined;
+      // pinned posts sit on top of the first page, so the last item tells where the page ends
+      const last = page.items[page.items.length - 1];
+      const pastPeriod = !!last?.timestamp && new Date(last.timestamp).getTime() < sinceMs && !last.isPinned;
+      if (!page.next || !page.items.length || pastPeriod || f.posts >= MAX_POSTS) f.done = true;
+      await saveFetch(sb, job);
+    }
+  } catch (e) {
+    if (e instanceof ScFatal) {
+      await failJob(sb, job.id, e.message);
+      return 'failed';
+    }
+    if (e instanceof ScNotFound && !f.profile) {
+      await failJob(sb, job.id, 'Профиль не найден.');
+      return 'failed';
+    }
+    f.fails += 1;
+    f.last_error = errMsg(e);
+    if (f.fails >= FEED_ROUNDS) {
+      f.fails = 0;
+      f.retry_at = undefined;
+      await saveFetch(sb, job);
+      await failJob(
+        sb,
+        job.id,
+        `ScrapeCreators не отдаёт ${f.profile ? 'ленту' : 'профиль'} (${f.last_error}). Собрано постов: ${f.posts}. ` +
+          'Нажми «Повторить» — сбор продолжится с этого места.'
+      );
+      return 'failed';
+    }
+    f.retry_at = Date.now() + retryWait(f.fails);
+    await saveFetch(sb, job);
+    return 'apify';
+  }
+  return f.done ? 'save' : 'apify';
 }
 
 async function stepApify(sb: SupabaseClient, job: AnalysisJob): Promise<AnalysisStatus> {
@@ -293,9 +409,59 @@ async function downloadImage(url: string, width: number): Promise<Buffer> {
   return sharp(buf).resize({ width, withoutEnlargement: true }).webp({ quality: 72 }).toBuffer();
 }
 
+function postRows(job: AnalysisJob, items: PostItem[]) {
+  return items.map((it) => {
+    const kind = kindOf(it);
+    const plays = num(it.videoPlayCount) ?? num(it.videoViewCount);
+    return {
+      job_id: job.id,
+      shortcode: it.shortCode!,
+      url: it.url || `https://www.instagram.com/p/${it.shortCode}/`,
+      kind,
+      posted_at: it.timestamp ?? null,
+      caption: it.caption ?? null,
+      likes: num(it.likesCount),
+      comments: num(it.commentsCount),
+      views: kind === 'reel' ? plays : null,
+      duration: kind === 'reel' ? num(it.videoDuration) : null,
+      slides:
+        kind === 'carousel'
+          ? Array.isArray(it.childPosts)
+            ? it.childPosts.length
+            : Array.isArray(it.images)
+              ? it.images.length
+              : null
+          : null,
+      is_pinned: !!it.isPinned,
+      coauthors: (it.coauthorProducers ?? [])
+        .map((c) => (c.username ?? '').toLowerCase())
+        .filter((u) => u && u !== job.username),
+      owner: it.ownerUsername?.toLowerCase() ?? null,
+      has_cta: hasCta(it.caption),
+      display_url: it.displayUrl ?? it.images?.[0] ?? null,
+      video_url: it.videoUrl ?? null,
+      slide_urls:
+        kind === 'carousel'
+          ? (it.childPosts?.map((c) => c.displayUrl).filter((u): u is string => !!u) ?? it.images ?? []).slice(0, 20)
+          : [],
+    };
+  });
+}
+
+async function upsertPosts(sb: SupabaseClient, rows: ReturnType<typeof postRows>) {
+  for (let i = 0; i < rows.length; i += 300) {
+    const { error } = await sb
+      .from('analysis_posts')
+      .upsert(rows.slice(i, i + 300), { onConflict: 'job_id,shortcode', ignoreDuplicates: true });
+    if (error) throw new Error(`Сохранение постов: ${error.message}`);
+  }
+}
+
 async function stepSave(sb: SupabaseClient, job: AnalysisJob): Promise<AnalysisStatus> {
   // profile
-  const [profile] = await getDataset<ProfileItem>(job.profile_dataset_id!);
+  const [profile] = job.scrape
+    ? [job.scrape.profile as ProfileItem | undefined]
+    : await getDataset<ProfileItem>(job.profile_dataset_id!);
   if (!profile || profile.error || !profile.username) {
     await failJob(sb, job.id, `Профиль не найден или закрыт${profile?.error ? `: ${profile.error}` : ''}.`);
     return 'failed';
@@ -330,57 +496,25 @@ async function stepSave(sb: SupabaseClient, job: AnalysisJob): Promise<AnalysisS
     { onConflict: 'username' }
   );
 
-  // posts
+  // posts — ScrapeCreators: already saved page by page
+  if (job.scrape) {
+    const { data: saved } = await sb.from('analysis_posts').select('shortcode').eq('job_id', job.id).limit(10000);
+    const fresh = new Set((saved ?? []).map((r) => r.shortcode as string));
+    if (!fresh.size && job.mode !== 'update') {
+      await failJob(sb, job.id, 'Не пришло ни одного поста (аккаунт пуст за год).');
+      return 'failed';
+    }
+    if (job.mode === 'update' && job.base_job_id) await carryOver(sb, job, fresh);
+    return 'thumbs';
+  }
   const items = (await getDataset<PostItem>(job.posts_dataset_id!)).filter((it) => it.shortCode && !it.error);
   if (!items.length && job.mode !== 'update') {
     await failJob(sb, job.id, 'Apify не вернул ни одного поста (аккаунт закрыт или пуст за год).');
     return 'failed';
   }
   const seen = new Set<string>();
-  const rows = items
-    .filter((it) => !seen.has(it.shortCode!) && seen.add(it.shortCode!))
-    .map((it) => {
-      const kind = kindOf(it);
-      const plays = num(it.videoPlayCount) ?? num(it.videoViewCount);
-      return {
-        job_id: job.id,
-        shortcode: it.shortCode!,
-        url: it.url || `https://www.instagram.com/p/${it.shortCode}/`,
-        kind,
-        posted_at: it.timestamp ?? null,
-        caption: it.caption ?? null,
-        likes: num(it.likesCount),
-        comments: num(it.commentsCount),
-        views: kind === 'reel' ? plays : null,
-        duration: kind === 'reel' ? num(it.videoDuration) : null,
-        slides:
-          kind === 'carousel'
-            ? Array.isArray(it.childPosts)
-              ? it.childPosts.length
-              : Array.isArray(it.images)
-                ? it.images.length
-                : null
-            : null,
-        is_pinned: !!it.isPinned,
-        coauthors: (it.coauthorProducers ?? [])
-          .map((c) => (c.username ?? '').toLowerCase())
-          .filter((u) => u && u !== job.username),
-        owner: it.ownerUsername?.toLowerCase() ?? null,
-        has_cta: hasCta(it.caption),
-        display_url: it.displayUrl ?? it.images?.[0] ?? null,
-        video_url: it.videoUrl ?? null,
-        slide_urls:
-          kind === 'carousel'
-            ? (it.childPosts?.map((c) => c.displayUrl).filter((u): u is string => !!u) ?? it.images ?? []).slice(0, 20)
-            : [],
-      };
-    });
-  for (let i = 0; i < rows.length; i += 300) {
-    const { error } = await sb
-      .from('analysis_posts')
-      .upsert(rows.slice(i, i + 300), { onConflict: 'job_id,shortcode', ignoreDuplicates: true });
-    if (error) throw new Error(`Сохранение постов: ${error.message}`);
-  }
+  const unique = items.filter((it) => !seen.has(it.shortCode!) && seen.add(it.shortCode!));
+  await upsertPosts(sb, postRows(job, unique));
   // comments that came with the posts (free) — the audience block uses them
   const comments = items.flatMap((it) =>
     (it.latestComments ?? []).map((c) => commentRow(job.id, it.shortCode!, c))
@@ -583,6 +717,85 @@ async function stepComments(sb: SupabaseClient, job: AnalysisJob): Promise<Analy
     .filter((r) => !seen.has(`${r.shortcode}|${r.text}`) && seen.add(`${r.shortcode}|${r.text}`));
   await insertComments(sb, rows);
   return 'texts';
+}
+
+/**
+ * ScrapeCreators comments: up to COMMENTS_PER_POST (2 pages) for each top post. A post whose
+ * comments did not come goes back in line and is retried after a pause (COMMENT_ROUNDS);
+ * still failing → skipped and noted. Returns 'comments' while there is work or a wait.
+ */
+async function stepCommentsSc(sb: SupabaseClient, job: AnalysisJob, deadline: number): Promise<AnalysisStatus> {
+  if (!COMMENT_POSTS) return 'texts';
+  const f = job.scrape!;
+  const posts = await loadPosts(sb, job.id);
+  const urlOf = new Map(posts.map((p) => [p.shortcode, p.url]));
+  const { data: have } = await sb.from('analysis_comments').select('shortcode,text').eq('job_id', job.id).limit(10000);
+  const counts = new Map<string, number>();
+  const seen = new Set<string>();
+  for (const c of have ?? []) {
+    counts.set(c.shortcode, (counts.get(c.shortcode) ?? 0) + 1);
+    seen.add(`${c.shortcode}|${c.text}`);
+  }
+
+  if (!f.comments) {
+    // fixed list on the first call, so posts that finish do not pull in new ones
+    const ranked = await rankedPosts(sb, job);
+    const targets = ranked
+      .filter((p) => (p.comments ?? 0) > 0 && (counts.get(p.shortcode) ?? 0) < Math.min(10, COMMENTS_PER_POST))
+      .slice(0, COMMENT_POSTS)
+      .map((p) => p.shortcode);
+    f.comments = { targets, done: [], fails: {} };
+    await saveFetch(sb, job);
+  }
+  const c = f.comments;
+  const left = c.targets.filter((sc) => !c.done.includes(sc) && (c.fails[sc]?.n ?? 0) < COMMENT_ROUNDS);
+  if (!left.length) {
+    const missed = c.targets.filter((sc) => !c.done.includes(sc));
+    if (missed.length) {
+      const msg = `комментарии не пришли у ${missed.length} из ${c.targets.length} топ-постов (ScrapeCreators не ответил)`;
+      job.ai_error = job.ai_error ? `${job.ai_error} · ${msg}` : msg;
+      await setJob(sb, job.id, { ai_error: job.ai_error });
+    }
+    return 'texts';
+  }
+  // first-try posts first, then the «to finish» ones whose pause is over
+  const now = Date.now();
+  const ready = left
+    .filter((sc) => !c.fails[sc] || now - c.fails[sc].at >= retryWait(c.fails[sc].n))
+    .sort((a, b) => (c.fails[a]?.n ?? 0) - (c.fails[b]?.n ?? 0));
+  if (!ready.length) return 'comments';
+
+  const pages = Math.max(1, Math.ceil(COMMENTS_PER_POST / SC_COMMENT_PAGE));
+  const until = deadline - 3_000;
+  let next = 0;
+  const worker = async () => {
+    while (next < ready.length && Date.now() < deadline - 8_000) {
+      const sc = ready[next++];
+      const url = urlOf.get(sc) ?? `https://www.instagram.com/p/${sc}/`;
+      try {
+        const got: CommentItem[] = [];
+        let cursor: string | null = null;
+        for (let i = 0; i < pages; i++) {
+          const page = await scCommentsPage(url, cursor, { until });
+          got.push(...page.items);
+          cursor = page.next;
+          if (!cursor) break;
+        }
+        const rows = got
+          .map((it) => commentRow(job.id, sc, it))
+          .filter((r) => !seen.has(`${r.shortcode}|${r.text}`) && seen.add(`${r.shortcode}|${r.text}`));
+        await insertComments(sb, rows);
+        c.done.push(sc);
+        delete c.fails[sc];
+      } catch (e) {
+        if (e instanceof ScFatal) throw e;
+        c.fails[sc] = { n: (c.fails[sc]?.n ?? 0) + 1, at: Date.now(), err: errMsg(e).slice(0, 200) };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: SC_CONCURRENCY }, worker));
+  await saveFetch(sb, job);
+  return 'comments';
 }
 
 /** Speech of the top reels + slide text of the top carousels. true = more to do. */
@@ -812,11 +1025,21 @@ ${cms.slice(0, 220).map((c) => `- ${c}`).join('\n') || '(no comments)'}`;
 // --- read ------------------------------------------------------------------------------------
 
 async function progressOf(sb: SupabaseClient, job: AnalysisJob): Promise<string | null> {
-  if (job.status === 'apify')
-    return job.mode === 'update' ? 'Apify собирает новые посты…' : 'Apify собирает профиль и посты за год…';
+  if (job.status === 'apify') {
+    const f = job.scrape;
+    if (!f) return job.mode === 'update' ? 'Apify собирает новые посты…' : 'Apify собирает профиль и посты за год…';
+    const what = job.mode === 'update' ? 'новые посты' : 'посты за год';
+    const retry = f.fails ? ` · не ответил, повтор ${f.fails} из ${FEED_ROUNDS - 1}…` : '';
+    return f.profile ? `Собираю ${what}: ${f.posts}${retry}` : `Собираю профиль…${retry}`;
+  }
   if (job.status === 'save') return 'Сохраняю посты…';
   if (job.status === 'stats') return 'Считаю цифры…';
-  if (job.status === 'comments') return 'AI-разбор: собираю комментарии…';
+  if (job.status === 'comments') {
+    const c = job.scrape?.comments;
+    if (!c) return 'AI-разбор: собираю комментарии…';
+    const wait = Object.keys(c.fails).length;
+    return `AI-разбор: комментарии ${c.done.length} из ${c.targets.length}${wait ? ` · доделываю ${wait}` : ''}…`;
+  }
   if (job.status === 'texts') return 'AI-разбор: расшифровываю топовые ролики и карусели…';
   if (job.status === 'tag') {
     const [{ count: total }, { count: done }] = await Promise.all([

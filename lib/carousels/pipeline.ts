@@ -23,16 +23,24 @@
 //                         computes outlier_ratio; listBasePosts() for «База постов».
 //   v0.7.1 (2026-11-20) — createStatsJob(): outlier for posts collected earlier (a job that
 //                         starts right at 'stats'); listBasePosts() also returns noOutlier.
+//   v0.8.0 (2026-11-23) — ScrapeCreators instead of Apify (when its key is set, SCRAPER=apify
+//                         switches back): posts one by one by link, author medians from the
+//                         author's last ~2 feed pages. «To finish» list: each call is retried
+//                         3× at once; a post / author that still failed goes back in line and
+//                         is retried 20–60 s later, up to 4 rounds; then the post is marked
+//                         failed (paste its link again to retry) / the author gets no median.
 
 import { createHash } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   startRun, startProfileRun, getRun, getItems, extractSlides, itemShortcode, parseLinks, RUN_FAILED,
+  PROFILE_POSTS, type ApifyItem,
 } from './apify';
+import { scEnabled, ScFatal, scPost, scPostsPage, type IgPost } from '@/lib/scrape/sc';
 import { ocrSlide, checkPost, splitLastSlide, OCR_MODEL, ESCALATE_MODEL } from './claude';
 import { postProcess } from './postprocess';
 import type {
-  CarouselJob, CarouselJobCard, CarouselPost, CarouselPostFull, CarouselSlide, CreateJobInfo,
+  CarouselFetch, CarouselJob, CarouselJobCard, CarouselPost, CarouselPostFull, CarouselSlide, CreateJobInfo,
   LastSplit,
 } from './types';
 
@@ -48,9 +56,13 @@ const AUTHOR_TTL_MS = 7 * 24 * 3600 * 1000; // median likes cache
 const STATS_WAIT_MS = 10 * 60 * 1000;       // give up on the authors run after this
 const SIMILAR_MIN = 0.9;                    // Jaccard of 3-word shingles
 const MIN_NORM_LEN = 30;                    // shorter texts are not compared
+const SC_ROUNDS = 4;                        // ScrapeCreators: rounds of 3 tries per post / author
+const SC_GAP_MS = 20_000;                   // pause before the next round (grows with each one)
+const SC_CONCURRENCY = 4;
+const scWait = (n: number) => Math.min(60_000, SC_GAP_MS * n);
 
 const JOB_COLS =
-  'id,status,urls,apify_run_id,apify_dataset_id,error,locked_until,stats_run_id,stats_dataset_id,stats_started_at,created_at,updated_at';
+  'id,status,urls,apify_run_id,apify_dataset_id,error,locked_until,stats_run_id,stats_dataset_id,stats_started_at,scrape,created_at,updated_at';
 const POST_COLS =
   'id,shortcode,url,author,posted_at,likes,comments,caption,brand,status,checked,last_split,error,' +
   'text_hash,duplicate_of,similar_to,similarity,outlier_ratio,stats_done,created_at,updated_at';
@@ -162,7 +174,11 @@ export async function createJob(
     links.map((l, i) => ({ job_id: job.id, post_id: ids.get(l.shortcode), position: i }))
   );
 
-  if (fresh.length) {
+  if (fresh.length && scEnabled()) {
+    const scrape: CarouselFetch = { provider: 'sc', done: [], fails: {} };
+    await setJob(sb, job.id, { scrape });
+    job.scrape = scrape;
+  } else if (fresh.length) {
     try {
       const run = await startRun(fresh.map((l) => l.url));
       await setJob(sb, job.id, { apify_run_id: run.id, apify_dataset_id: run.defaultDatasetId });
@@ -220,7 +236,7 @@ export async function stepJob(sb: SupabaseClient, jobId: string): Promise<boolea
   try {
     while (Date.now() < deadline && status !== 'done' && status !== 'failed') {
       if (status === 'apify') {
-        const next = await stepApify(sb, job);
+        const next = job.scrape ? await stepFetch(sb, job, deadline) : await stepApify(sb, job);
         if (next === status) break; // still running on Apify's side
         status = next;
       } else if (status === 'ocr') {
@@ -230,7 +246,7 @@ export async function stepJob(sb: SupabaseClient, jobId: string): Promise<boolea
       } else if (status === 'escalate') {
         if (!(await stepEscalate(sb, jobId)) && !(await stepFinalize(sb, jobId))) status = 'stats';
       } else if (status === 'stats') {
-        const next = await stepStats(sb, job);
+        const next = await stepStats(sb, job, deadline);
         if (next === status) break; // authors run still going on Apify's side
         status = next;
       }
@@ -277,25 +293,78 @@ async function stepApify(sb: SupabaseClient, job: CarouselJob): Promise<Carousel
         .eq('id', p.id);
       continue;
     }
+    await savePost(sb, p.id, it);
+  }
+  return 'ocr';
+}
+
+/** Post fields + slide rows of one collected post. */
+async function savePost(sb: SupabaseClient, postId: string, it: ApifyItem | IgPost) {
+  await sb
+    .from('carousel_posts')
+    .update({
+      author: it.ownerUsername ?? null,
+      posted_at: it.timestamp ?? null,
+      likes: it.likesCount ?? null,
+      comments: it.commentsCount ?? null,
+      caption: it.caption ?? null,
+      updated_at: nowIso(),
+    })
+    .eq('id', postId);
+  const slides = extractSlides(it as ApifyItem);
+  if (slides.length) {
+    await sb.from('carousel_slides').delete().eq('post_id', postId); // a retried post starts clean
+    await sb.from('carousel_slides').insert(
+      slides.map((s, i) => ({ post_id: postId, idx: i + 1, source_url: s.url, is_video: s.isVideo }))
+    );
+  }
+}
+
+/**
+ * ScrapeCreators: posts one by one by link. A post that did not come goes back in line and
+ * is retried after a pause; after SC_ROUNDS rounds it is marked failed. 'apify' = more to do.
+ */
+async function stepFetch(sb: SupabaseClient, job: CarouselJob, deadline: number): Promise<CarouselJob['status']> {
+  const f = job.scrape!;
+  const pending = (await pendingPosts(sb, job.id)).filter((p) => !f.done.includes(p.shortcode));
+  const left = pending.filter((p) => (f.fails[p.shortcode]?.n ?? 0) < SC_ROUNDS);
+
+  // gave up on these: mark failed, the rest goes on to OCR
+  const gaveUp = pending.filter((p) => !left.includes(p));
+  for (const p of gaveUp) {
+    const err = f.fails[p.shortcode]?.err ?? 'not returned';
     await sb
       .from('carousel_posts')
       .update({
-        author: it.ownerUsername ?? null,
-        posted_at: it.timestamp ?? null,
-        likes: it.likesCount ?? null,
-        comments: it.commentsCount ?? null,
-        caption: it.caption ?? null,
+        status: 'failed',
+        error: `ScrapeCreators не отдал пост после ${SC_ROUNDS * 3} попыток (${err}). Вставь ссылку ещё раз, чтобы повторить.`,
         updated_at: nowIso(),
       })
       .eq('id', p.id);
-    const slides = extractSlides(it);
-    if (slides.length) {
-      await sb.from('carousel_slides').insert(
-        slides.map((s, i) => ({ post_id: p.id, idx: i + 1, source_url: s.url, is_video: s.isVideo }))
-      );
-    }
   }
-  return 'ocr';
+  if (!left.length) return 'ocr';
+
+  const now = Date.now();
+  const ready = left
+    .filter((p) => !f.fails[p.shortcode] || now - f.fails[p.shortcode].at >= scWait(f.fails[p.shortcode].n))
+    .sort((a, b) => (f.fails[a.shortcode]?.n ?? 0) - (f.fails[b.shortcode]?.n ?? 0));
+  if (!ready.length) return 'apify'; // waiting for the pause before the next round
+
+  const until = deadline - 2_000;
+  await pool(ready, SC_CONCURRENCY, async (p) => {
+    if (Date.now() > deadline - 6_000) return;
+    try {
+      const it = await scPost(p.url, { until });
+      await savePost(sb, p.id, it);
+      f.done.push(p.shortcode);
+      delete f.fails[p.shortcode];
+    } catch (e) {
+      if (e instanceof ScFatal) throw e;
+      f.fails[p.shortcode] = { n: (f.fails[p.shortcode]?.n ?? 0) + 1, at: Date.now(), err: errMsg(e).slice(0, 160) };
+    }
+  });
+  await setJob(sb, job.id, { scrape: f });
+  return 'apify';
 }
 
 // ocr: returns true if it processed something
@@ -613,7 +682,7 @@ function median(nums: number[]): number {
 }
 
 /** Returns the next status: 'stats' = waiting for the authors run, else 'done'. */
-async function stepStats(sb: SupabaseClient, job: CarouselJob): Promise<CarouselJob['status']> {
+async function stepStats(sb: SupabaseClient, job: CarouselJob, deadline: number): Promise<CarouselJob['status']> {
   const ids = await jobPostIds(sb, job.id);
   const { data } = ids.length
     ? await sb
@@ -638,7 +707,42 @@ async function stepStats(sb: SupabaseClient, job: CarouselJob): Promise<Carousel
   }
   const missing = authors.filter((a) => !fresh.has(a));
 
-  if (missing.length) {
+  if (missing.length && !job.stats_run_id && scEnabled()) {
+    // ScrapeCreators: last ~PROFILE_POSTS feed posts of each author; failed authors retried later
+    const f: CarouselFetch = job.scrape ?? { provider: 'sc', done: [], fails: {} };
+    const marks = (f.authors ??= {});
+    const now = Date.now();
+    const gaveUp = missing.filter((u) => (marks[u]?.n ?? 0) >= SC_ROUNDS);
+    for (const u of gaveUp) await saveAuthors(sb, [u], new Map(), `ScrapeCreators: ${marks[u]?.err ?? 'нет ответа'}`, fresh);
+    const ready = missing
+      .filter((u) => (marks[u]?.n ?? 0) < SC_ROUNDS)
+      .filter((u) => !marks[u] || now - marks[u].at >= scWait(marks[u].n));
+    const pages = Math.max(1, Math.ceil(PROFILE_POSTS / 12));
+    const until = deadline - 2_000;
+    await pool(ready, 3, async (u) => {
+      if (Date.now() > deadline - 8_000) return;
+      try {
+        const likes: number[] = [];
+        let cursor: string | null = null;
+        for (let i = 0; i < pages; i++) {
+          const page = await scPostsPage(u, cursor, { until });
+          for (const it of page.items) {
+            if (!it.isPinned && typeof it.likesCount === 'number' && it.likesCount > 0) likes.push(it.likesCount);
+          }
+          cursor = page.next;
+          if (!cursor) break;
+        }
+        await saveAuthors(sb, [u], new Map([[u, likes.slice(0, PROFILE_POSTS)]]), null, fresh);
+        delete marks[u];
+      } catch (e) {
+        if (e instanceof ScFatal) throw e;
+        marks[u] = { n: (marks[u]?.n ?? 0) + 1, at: Date.now(), err: errMsg(e).slice(0, 160) };
+      }
+    });
+    await setJob(sb, job.id, { scrape: f });
+    job.scrape = f;
+    if (missing.some((u) => !fresh.has(u))) return 'stats'; // some authors still to finish
+  } else if (missing.length) {
     if (!job.stats_run_id) {
       try {
         const run = await startProfileRun(missing);

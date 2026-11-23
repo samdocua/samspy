@@ -1,5 +1,5 @@
 // SamSpy — CarouselsView (tab «Карусели», Instagram only)
-// Paste Instagram carousel links → collect slide texts (Apify + Claude OCR).
+// Paste Instagram carousel links → collect slide texts (ScrapeCreators + Claude OCR).
 // While this tab is open it keeps advancing unfinished jobs (POST …/step);
 // closing the tab pauses them, reopening resumes.
 //
@@ -12,6 +12,7 @@
 //                         delete) next to «Задачи»; after «Собрать»: N new / M already in base;
 //                         outlier badge (likes ÷ author's median likes); «Дубль» / «Похож на …».
 //   v0.7.1 (2026-11-20) — «Посчитать outlier (N)» for posts collected earlier.
+//   v0.8.0 (2026-11-23) — wording: posts come from ScrapeCreators (Apify kept as a fallback).
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -24,7 +25,7 @@ import { joinSoftBreaks } from '@/lib/carousels/postprocess';
 import { makeSlidesImport, type SlidesImport } from '@/lib/carousels/toSlides';
 
 const STATUS: Record<CarouselJobStatus, { label: string; cls: string }> = {
-  apify: { label: 'Apify собирает посты', cls: 'bg-amber-50 text-amber-700' },
+  apify: { label: 'Собираю посты', cls: 'bg-amber-50 text-amber-700' },
   ocr: { label: 'Распознаю текст', cls: 'bg-blue-50 text-blue-700' },
   check: { label: 'Проверка', cls: 'bg-blue-50 text-blue-700' },
   escalate: { label: 'Перепроверка', cls: 'bg-blue-50 text-blue-700' },
@@ -240,7 +241,7 @@ function CreateJob({
     <div className="rounded-xl border border-edge bg-white p-4 shadow-sm">
       <h2 className="mb-1 text-sm font-semibold text-gray-900">Собрать тексты каруселей</h2>
       <p className="mb-3 text-xs text-muted">
-        Ссылки на посты, по одной в строке. ~$0.002 за карусель (Apify + распознавание). Уже
+        Ссылки на посты, по одной в строке. ~$0.004 за карусель (1 кредит ScrapeCreators + распознавание). Уже
         собранные посты берутся из базы бесплатно. Пока идёт сбор, держи вкладку открытой.
       </p>
       <form onSubmit={submit} className="flex flex-col gap-2">
@@ -521,7 +522,7 @@ function BaseView({
           <button
             onClick={() => void countOutlier()}
             disabled={starting || statsRunning}
-            title="Докачает последние посты авторов через Apify (~$0.03–0.05 на автора)"
+            title="Докачает последние посты авторов (2 кредита ScrapeCreators на автора)"
             className="rounded-lg border border-edge bg-white px-3 py-1.5 text-xs disabled:opacity-50"
           >
             {statsRunning ? 'Считаю outlier…' : `Посчитать outlier (${noOutlier})`}
