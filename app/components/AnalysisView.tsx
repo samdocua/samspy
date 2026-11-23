@@ -25,6 +25,7 @@
 //   v0.4.0 (2026-11-23) — big account: the card asks how many of the newest posts to collect
 //                         (500 / 1000 / 2000 / весь год, with depth in days and credits); jobs
 //                         run in the background, the tab only shows progress.
+//   v0.4.1 (2026-11-23) — limit buttons say «Последние 500 постов» (full numbers, plural forms).
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -287,6 +288,18 @@ export default function AnalysisView() {
 // --- big account: how many posts to collect -------------------------------------------------
 const LIMIT_OPTIONS = [500, 1000, 2000];
 const COMMENT_CREDITS = 30; // comments of the top posts, about the same for any size
+const fmtInt = (n: number) => Math.round(n).toLocaleString('ru-RU');
+/** 1 пост · 3 поста · 5 постов */
+function plural(n: number, [one, few, many]: [string, string, string]) {
+  const a = Math.abs(Math.round(n)) % 100;
+  const b = a % 10;
+  if (a > 10 && a < 20) return many;
+  if (b === 1) return one;
+  if (b >= 2 && b <= 4) return few;
+  return many;
+}
+const posts = (n: number) => `${fmtInt(n)} ${plural(n, ['пост', 'поста', 'постов'])}`;
+const creds = (n: number) => `${fmtInt(n)} ${plural(n, ['кредит', 'кредита', 'кредитов'])}`;
 
 function ConfirmBox({
   estimate: e,
@@ -306,9 +319,8 @@ function ConfirmBox({
     <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs">
       <p className="text-amber-900">
         За год {e.exact ? '' : 'примерно '}
-        <b>{fmtNum(e.year)} постов</b> (~{e.per_day.toLocaleString('ru-RU')} в день). Весь год — ~
-        {fmtNum(credits(e.year))} кредитов (~${((credits(e.year) * 47) / 25000).toFixed(2)}) и долгая AI-разметка. Сколько
-        последних постов собрать?
+        <b>{posts(e.year)}</b> (~{e.per_day.toLocaleString('ru-RU')} в день). Весь год — ~{creds(credits(e.year))} (~$
+        {((credits(e.year) * 47) / 25000).toFixed(2)}) и долгая AI-разметка. Сколько последних постов собрать?
       </p>
       <div className="mt-2 flex flex-wrap gap-2">
         {opts.map((n) => (
@@ -317,7 +329,7 @@ function ConfirmBox({
             onClick={() => onPick(n)}
             className="rounded-lg border border-edge bg-white px-2.5 py-1.5 text-left hover:border-accent"
           >
-            <span className="font-medium">Последние {fmtNum(n)}</span>
+            <span className="font-medium">Последние {posts(n)}</span>
             <span className="block text-[11px] text-muted">
               {depth(n)} · ~{credits(n)} кр.
             </span>
@@ -327,8 +339,8 @@ function ConfirmBox({
           onClick={() => onPick('all')}
           className="rounded-lg border border-edge bg-white px-2.5 py-1.5 text-left hover:border-accent"
         >
-          <span className="font-medium">Весь год ~{fmtNum(e.year)}</span>
-          <span className="block text-[11px] text-muted">~{fmtNum(credits(e.year))} кр.</span>
+          <span className="font-medium">Весь год ~{posts(e.year)}</span>
+          <span className="block text-[11px] text-muted">~{fmtInt(credits(e.year))} кр.</span>
         </button>
         <button onClick={() => onPick('cancel')} className="px-2 text-muted hover:text-red-600">
           Отмена
