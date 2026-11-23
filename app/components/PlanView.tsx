@@ -8,12 +8,14 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-22) — initial.
-//   v0.1.1 (2026-11-23) — plans are written in the background (worker), copy updated.
+//   v0.2.0 (2026-11-23) — universal CTA texts with a keyword (MORE / LIST / SEND), one per line
+//                         in the form; card shows the keyword.
+//   v0.2.1 (2026-11-23) — plans are written in the background (worker), copy updated.
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SlidesImport } from '@/lib/carousels/toSlides';
-import { DEFAULT_CTAS, type ContentPlan, type ItemStatus, type PlanCard, type PlanItem } from '@/lib/plan/types';
+import { DEFAULT_CTAS, keywordOf, type ContentPlan, type ItemStatus, type PlanCard, type PlanItem } from '@/lib/plan/types';
 import type { AccountCard } from '@/lib/analysis/types';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -311,9 +313,18 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
 
       <label className="block">
         <span className={labelCls}>
-          Последний слайд — призыв в комменты (по варианту на строку, чередуются по постам, чтобы сравнить)
+          Последний слайд — призыв в комменты: универсальные тексты со СЛОВОМ заглавными, по одному на строку.
+          Чередуются по постам — потом сравнишь, какой собирает больше комментов
         </span>
-        <textarea value={ctas} onChange={(e) => setCtas(e.target.value)} rows={4} className={`${inputCls} h-auto py-2`} />
+        <textarea value={ctas} onChange={(e) => setCtas(e.target.value)} rows={6} className={`${inputCls} h-auto py-2`} />
+        {ctas
+          .split('\n')
+          .filter((l) => l.trim() && !keywordOf(l))
+          .map((l) => (
+            <p key={l} className="mt-1 text-xs text-amber-600">
+              Нет слова заглавными: «{l.trim()}»
+            </p>
+          ))}
       </label>
       <label className="block">
         <span className={labelCls}>Пожелания (необязательно)</span>
@@ -548,7 +559,9 @@ function ItemCard({
   }
 
   const ctaIdx = it.cta_variant ?? 0;
-  const lastIsCta = it.slides[it.slides.length - 1] === plan.settings.cta_variants[ctaIdx];
+  const ctaText = plan.settings.cta_variants[ctaIdx % plan.settings.cta_variants.length] ?? '';
+  const ctaLabel = keywordOf(ctaText) ?? String.fromCharCode(65 + ctaIdx);
+  const lastIsCta = it.slides[it.slides.length - 1] === ctaText;
 
   return (
     <div className="flex flex-col rounded-xl border border-edge bg-white p-4">
@@ -557,8 +570,8 @@ function ItemCard({
         <span className={`rounded-full px-2 py-0.5 ${STATUS_CLS[it.status]}`}>{STATUS_LABEL[it.status]}</span>
         {it.rubric && <span className="rounded-full border border-edge px-2 py-0.5 text-muted">{it.rubric}</span>}
         {it.hook && <span className="rounded-full border border-edge px-2 py-0.5 text-muted">{it.hook}</span>}
-        <span className="rounded-full border border-edge px-2 py-0.5 text-muted" title={plan.settings.cta_variants[ctaIdx]}>
-          призыв {String.fromCharCode(65 + ctaIdx)}
+        <span className="rounded-full border border-accent/40 bg-accent/5 px-2 py-0.5 font-mono font-semibold text-accent" title={ctaText}>
+          {ctaLabel}
         </span>
       </div>
       {it.title && <p className="mb-2 font-semibold leading-snug">{it.title}</p>}
