@@ -19,6 +19,8 @@
 //                         texts; ocrCarousel() also reads a single cover / reel frame.
 //   v0.3.2 (2026-11-22) — dossier / breakdown texts mention posts only as [id] (the app turns
 //                         them into «№N» links); × figures rounded.
+//   v0.3.3 (2026-11-23) — texts sent to Claude drop half-emoji left by .slice() (lone UTF-16
+//                         surrogates made the API reject the dossier request: «invalid JSON»).
 
 import sharp from 'sharp';
 import type { Breakdown, DossierAI, Vocab } from './types';
@@ -37,9 +39,14 @@ type Content =
   | { type: 'text'; text: string }
   | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
 
+/** Drops lone UTF-16 surrogates (half of an emoji cut by .slice()) — the API rejects them. */
+const wellFormed = (t: string) =>
+  t.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '');
+
 async function claude(model: string, content: Content[], maxTokens: number, attempt = 1): Promise<string> {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error('ANTHROPIC_API_KEY не задан.');
+  content = content.map((c) => (c.type === 'text' ? { ...c, text: wellFormed(c.text) } : c));
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
