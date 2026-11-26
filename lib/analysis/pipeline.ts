@@ -61,6 +61,10 @@
 //   v0.6.1 (2026-11-26) — the 200 read in full are the strongest «относительно своего времени»
 //                         (likes / median of ±15 days, ≤ 30 a month — lib/analysis/winners.ts),
 //                         not just the most liked.
+//   v0.6.2 (2026-11-26) — slides → tag: «tagged = false» in parts of 200 ids (1000 ids made a URL
+//                         too long, the loop never ended and loaded the database); tagging splits a
+//                         failed batch down to single posts, a single post the fast model refuses
+//                         goes to the main model; one short line about skipped posts in ai_error.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -80,9 +84,11 @@ import {
 import {
   breakdownPosts,
   discoverVocab,
+  MAIN_MODEL,
   ocrCarousel,
   synthesize,
   tagPosts,
+  TAG_MODEL,
   transcribe,
   type PostForAI,
 } from './ai';
@@ -619,10 +625,17 @@ async function stepSlides(sb: SupabaseClient, job: AnalysisJob, deadline: number
     job.ai_error = job.ai_error ? `${job.ai_error} · ${msg}` : msg;
   }
   for (;;) {
-    // in parts: one update of 10 000 rows can hit the statement timeout
-    const { data: ids } = await sb.from('analysis_posts').select('id').eq('job_id', job.id).eq('tagged', true).limit(1000);
+    // in parts: one update of 10 000 rows can hit the statement timeout, and 1000 ids in one
+    // request make a URL too long — 200 at a time; stop on any error (the next step resumes)
+    if (Date.now() > deadline) {
+      await setJob(sb, job.id, { ai_error: job.ai_error, scrape: job.scrape });
+      return 'slides';
+    }
+    const { data: ids, error: selErr } = await sb.from('analysis_posts').select('id').eq('job_id', job.id).eq('tagged', true).limit(200);
+    if (selErr) throw new Error(selErr.message);
     if (!ids?.length) break;
-    await sb.from('analysis_posts').update({ tagged: false }).in('id', ids.map((r) => r.id));
+    const { error: updErr } = await sb.from('analysis_posts').update({ tagged: false }).in('id', ids.map((r) => r.id));
+    if (updErr) throw new Error(updErr.message);
   }
   job.ai_meta = null;
   await setJob(sb, job.id, { ai_meta: null, ai_error: job.ai_error, scrape: job.scrape });
@@ -1209,24 +1222,43 @@ async function stepTag(sb: SupabaseClient, job: AnalysisJob, deadline: number): 
       })
     );
   };
-  const run = async (batch: typeof untagged, depth = 0): Promise<void> => {
+  // one short line in ai_error: how many posts stayed without tags (not one line per batch)
+  const skipped = async (n: number, why: string) => {
+    const f = (job.scrape ??= { provider: 'sc', since: job.period_from, pages: 0, posts: 0, fails: 0, done: true });
+    f.tag_skipped = (f.tag_skipped ?? 0) + n;
+    const rest = (job.ai_error ?? '').split(' · ').filter((x) => x && !x.startsWith('tag:'));
+    job.ai_error = [...rest, `tag: ${f.tag_skipped} пост(ов) без разметки — ${why.slice(0, 60)}`].join(' · ');
+    await setJob(sb, job.id, { ai_error: job.ai_error, scrape: job.scrape });
+  };
+  // a failed batch is split down to single posts, so one post the model refuses (spicy questions)
+  // does not take the rest of its batch with it; a single post goes to the main model last
+  const run = async (batch: typeof untagged, retries = 0): Promise<void> => {
     try {
-      const tags = await tagPosts(batch.map(forAI), job.ai_meta!);
+      const single = batch.length === 1 && retries > 0;
+      const f = job.scrape;
+      if (single && f) f.tag_main = (f.tag_main ?? 0) + 1;
+      const tags = await tagPosts(batch.map(forAI), job.ai_meta!, single ? MAIN_MODEL : TAG_MODEL);
+      if (single && f && tags.length) {
+        f.tag_main_ok = (f.tag_main_ok ?? 0) + 1;
+        await setJob(sb, job.id, { scrape: f });
+      }
       const got = new Set(tags.map((t) => t.sc));
       const missing = batch.filter((p) => !got.has(p.shortcode));
-      // posts the model skipped / broke get one more try on their own
-      await save(depth < 2 ? batch.filter((p) => got.has(p.shortcode)) : batch, tags);
-      if (missing.length && depth < 2) await run(missing, depth + 1);
+      await save(batch.filter((p) => got.has(p.shortcode)), tags);
+      if (!missing.length) return;
+      if (retries < 2) return run(missing, retries + 1);
+      await save(missing, []);
+      await skipped(missing.length, 'модель их пропустила');
     } catch (e) {
-      if (depth < 2 && batch.length > 1) {
+      if (batch.length > 1) {
         const mid = Math.ceil(batch.length / 2);
-        await run(batch.slice(0, mid), depth + 1);
-        await run(batch.slice(mid), depth + 1);
+        await run(batch.slice(0, mid), retries);
+        await run(batch.slice(mid), retries);
+      } else if (retries < 1) {
+        await run(batch, retries + 1);
       } else {
         await save(batch, []);
-        const msg = `tag: ${batch.length} пост(ов) без разметки — ${errMsg(e).slice(0, 80)}`;
-        job.ai_error = job.ai_error ? `${job.ai_error} · ${msg}` : msg;
-        await setJob(sb, job.id, { ai_error: job.ai_error });
+        await skipped(1, errMsg(e));
       }
     }
   };

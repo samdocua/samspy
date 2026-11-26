@@ -15,6 +15,7 @@
 //   v0.5.3 (2026-11-24) — FetchState.ai_fails: AI step failures in a row.
 //   v0.6.0 (2026-11-26) — status 'slides' + FetchState.slides: slide texts of a finished dossier
 //                         (all slides of the top 200 carousels, covers of the rest), then re-tag.
+//   v0.6.2 (2026-11-26) — FetchState.tag_skipped.
 
 export type AnalysisStatus =
   | 'confirm'
@@ -61,6 +62,9 @@ export interface FetchState {
   limit?: number;
   /** AI step failures in a row (step → count); a step is retried before it is skipped */
   ai_fails?: Record<string, number>;
+  tag_skipped?: number; // posts left without tags (the model refused / skipped them)
+  tag_main?: number; // single posts the fast model failed on, sent to the main model
+  tag_main_ok?: number; // …of them tagged by the main model
   /** «Распознать слайды» on a finished dossier */
   slides?: {
     failed: number; // carousels whose images did not load (links expired)
