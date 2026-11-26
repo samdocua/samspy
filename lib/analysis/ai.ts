@@ -27,7 +27,10 @@
 //   v0.4.1 (2026-11-26) — stop_reason «refusal» is an error (the caller retries in smaller
 //                         parts); tagPosts() can take another model; its prompt explains the task
 //                         is labelling public posts (couple question cards can be spicy).
+//   v0.4.2 (2026-11-26) — no up-front thinking for the fast-model tasks (lib/anthropic.ts): the
+//                         5.x models think by default and the thinking counted against max_tokens.
 
+import { thinkingOff } from '@/lib/anthropic';
 import sharp from 'sharp';
 import type { Breakdown, DossierAI, Vocab } from './types';
 
@@ -56,7 +59,14 @@ async function claude(model: string, content: Content[], maxTokens: number, atte
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({ model, max_tokens: maxTokens, messages: [{ role: 'user', content }] }),
+    // tags / OCR / slide cleaning: no up-front thinking (it ate max_tokens and cut the JSON off);
+    // the dossier and breakdowns (main model) keep it
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      ...(model === MAIN_MODEL ? {} : thinkingOff(model)),
+      messages: [{ role: 'user', content }],
+    }),
     cache: 'no-store',
   });
   if ((res.status === 429 || res.status >= 500) && attempt < 3) {

@@ -28,7 +28,10 @@
 //                         flirty is fine, never explicit); quotes inside JSON values repaired; if
 //                         nothing comes back — a second try without the competitor examples (spicy
 //                         ones can make the model refuse); the error names the stop reason.
+//   v0.5.2 (2026-11-26) — the writer runs without up-front thinking (Sonnet 5.5 thinks by default
+//                         and its thinking used up max_tokens: answers came back cut off).
 
+import { thinkingOff } from '@/lib/anthropic';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AnalysisAccount, AnalysisJob, AnalysisPost } from '@/lib/analysis/types';
 import { rankCarousels, topWinners } from '@/lib/analysis/winners';
@@ -153,7 +156,12 @@ interface Answer {
   stop: string; // stop_reason: end_turn / max_tokens / refusal…
 }
 
-async function claude(content: { text: string; cache?: boolean }[], maxTokens: number, attempt = 1): Promise<Answer> {
+async function claude(
+  content: { text: string; cache?: boolean }[],
+  maxTokens: number,
+  think = true,
+  attempt = 1
+): Promise<Answer> {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error('ANTHROPIC_API_KEY не задан.');
   const wellFormed = (t: string) =>
@@ -164,6 +172,7 @@ async function claude(content: { text: string; cache?: boolean }[], maxTokens: n
     body: JSON.stringify({
       model: PLAN_MODEL,
       max_tokens: maxTokens,
+      ...(think ? {} : thinkingOff(PLAN_MODEL)),
       messages: [
         {
           role: 'user',
@@ -179,7 +188,7 @@ async function claude(content: { text: string; cache?: boolean }[], maxTokens: n
   });
   if ((res.status === 429 || res.status >= 500) && attempt < 3) {
     await new Promise((r) => setTimeout(r, 2000 * attempt));
-    return claude(content, maxTokens, attempt + 1);
+    return claude(content, maxTokens, think, attempt + 1);
   }
   if (!res.ok) throw new Error(`Claude HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = (await res.json()) as { content?: { type: string; text?: string }[]; stop_reason?: string };
@@ -401,11 +410,16 @@ Answer with ONLY this JSON:
 {"items":[{"key":"...","title":"...","cover":"...","questions":["...","..."],"caption":"..."}]}`;
 
   const maxTokens = Math.min(16000, 700 * slots.length + 800);
-  const first = await claude([{ text: shared, cache: true }, { text: perBatchOf(examplesFor(s.examples ?? [], batch)) }], maxTokens);
+  // no up-front thinking: it counted against max_tokens and cut the answer off (stop max_tokens)
+  const first = await claude(
+    [{ text: shared, cache: true }, { text: perBatchOf(examplesFor(s.examples ?? [], batch)) }],
+    maxTokens,
+    false
+  );
   const items = parseItems(first.text);
   if (items.length) return items;
   // nothing came back (spicy examples can make the model refuse): once more with the playbook only
-  const second = await claude([{ text: shared, cache: true }, { text: perBatchOf([]) }], maxTokens);
+  const second = await claude([{ text: shared, cache: true }, { text: perBatchOf([]) }], maxTokens, false);
   const retry = parseItems(second.text);
   if (retry.length) return retry;
   throw new Error(
