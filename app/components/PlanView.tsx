@@ -20,6 +20,7 @@
 //   v0.4.0 (2026-11-26) — mode «Вперемешку»: half copies, half new; the card says which.
 //   v0.5.0 (2026-11-26) — «Чему научился Claude»: carousels learned from per source + the playbook;
 //                         the form explains «Распознать слайды»; mix = copy, new, copy, new.
+//   v0.6.0 (2026-11-26) — «Американский сленг» checkbox for new posts (copies stay 1:1).
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -229,6 +230,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
   const [ctas, setCtas] = useState(DEFAULT_CTAS.join('\n'));
   const [follows, setFollows] = useState(DEFAULT_FOLLOW_CTAS.join('\n'));
   const [notes, setNotes] = useState('');
+  const [slang, setSlang] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -266,6 +268,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           cta_variants: ctas.split('\n').map((l) => l.trim()).filter(Boolean),
           follow_variants: follows.split('\n').map((l) => l.trim()).filter(Boolean),
           notes,
+          slang: mode !== 'copy' && slang,
           sources: Array.from(picked),
         }),
       });
@@ -357,6 +360,15 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           <label className="block">
             <span className={labelCls}>Язык слайдов</span>
             <input value={language} onChange={(e) => setLanguage(e.target.value)} className={inputCls} />
+          </label>
+        )}
+        {mode !== 'copy' && (
+          <label className="flex cursor-pointer items-center gap-2 self-end pb-2 text-sm">
+            <input type="checkbox" checked={slang} onChange={(e) => setSlang(e.target.checked)} className="h-4 w-4" />
+            <span>
+              Американский сленг
+              <span className="block text-xs text-muted">современный, в меру; копии не меняются</span>
+            </span>
           </label>
         )}
         <label className="block">
@@ -510,6 +522,7 @@ function PlanDetail({
             : plan.settings.mode === 'mix'
               ? `вперемешку: копии + новые (вопросов ${plan.settings.q_min}–${plan.settings.q_max})`
               : `${plan.settings.language} · вопросов ${plan.settings.q_min}–${plan.settings.q_max}`}
+          {plan.settings.slang && ' · сленг'}
         </span>
         <span className="ml-auto flex gap-3">
           {card?.status === 'failed' && (

@@ -13,6 +13,7 @@
 //   v0.5.0 (2026-11-26) — the writer learns from up to 200 strongest carousels per source:
 //                         settings.playbook (Claude's notes) + settings.examples; mix plans go
 //                         copy, new, copy, new… (the CTA kind changes every two posts there).
+//   v0.6.0 (2026-11-26) — settings.slang: new posts in current American slang (copies never).
 
 /** Last slides that ask to comment a keyword. Universal (fit any post). Rotated. */
 export const DEFAULT_CTAS = [
@@ -85,6 +86,7 @@ export interface PlanSettings {
   cta_variants: string[]; // last slides with a comment keyword, rotated
   follow_variants?: string[]; // last slides «follow for more», rotated (alternate with the above)
   notes: string; // free wishes for the writer
+  slang?: boolean; // new posts in current American slang, moderately (copies stay 1:1)
   brief: string; // older snapshot of the source dossiers (fallback when few slides are read)
   playbook?: string; // what wins at the sources — Claude's notes over their strongest carousels
   examples?: PlanExample[]; // those carousels (server only; the writer rotates through them)

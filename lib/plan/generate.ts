@@ -22,6 +22,8 @@
 //   v0.4.0 (2026-11-26) — learning from up to 200 strongest carousels per source: playbook +
 //                         rotating examples (prompt caching on the shared part); combos from
 //                         strength «относительно своего времени».
+//   v0.5.0 (2026-11-26) — settings.slang: current American slang, moderately (only here — copies
+//                         never pass through the writer).
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AnalysisAccount, AnalysisJob, AnalysisPost } from '@/lib/analysis/types';
@@ -296,6 +298,12 @@ function parseItems(answer: string): Written[] {
   return out;
 }
 
+const SLANG_RULES = `SLANG — write like a real American in their 20s posts on TikTok / Instagram today (2025–2026), using CURRENT American slang:
+- moderately: the cover always has a slang word or phrase; roughly half of the questions have one; the rest are plain casual English. Never more than one slang expression per slide; never forced — if it sounds cringe, leave it out
+- only slang that is current right now, e.g. lowkey / highkey, the ick, situationship, red / green / beige flag, delulu, rizz, ngl, it's giving…, main character energy, soft launch / hard launch, your Roman Empire, the bare minimum, love bombing, breadcrumbing, yapping, the way…, be so for real, touch grass, aura, gatekeeping, core memory, unhinged, toxic trait, pick me, it's the … for me. Do not reuse the same expression in two carousels
+- NEVER dated slang: YOLO, on fleek, bae, swag, lit, savage, squad goals, fam, Netflix and chill, I can't even, totes, adulting, turnt, basic, no cap, sus, slay
+- every question must still be perfectly clear to any reader; the caption may use slang too; the given last slide stays exactly as given`;
+
 /** Examples for one batch: the 10 strongest + 20 rotating through the rest. */
 function examplesFor(all: PlanExample[], batch: number): PlanExample[] {
   if (all.length <= EXAMPLES_PER_BATCH) return all;
@@ -326,7 +334,7 @@ ${s.brief || '(no source dossiers)'}`;
 Write in ${s.language}. Make the hooks and questions as catchy as the strongest examples: same kinds of hooks, same kinds of questions, same tone — but your own words; never copy a cover or a question, not even reworded closely. No emojis on the cover and questions, no numbering inside the questions.
 
 ${learned}
-${s.notes ? `\nMY WISHES: ${s.notes}\n` : ''}`;
+${s.slang ? `\n${SLANG_RULES}\n` : ''}${s.notes ? `\nMY WISHES: ${s.notes}\n` : ''}`;
 
   const ex = examplesFor(s.examples ?? [], batch);
   const perBatch = `${ex.length ? `STRONGEST CAROUSELS TO LEARN FROM (×N = how much it beat the account's ordinary posts of its time):\n${ex.map(exampleText).join('\n\n')}\n\n` : ''}ALREADY IN THE PLAN — never repeat these topics or questions, not even reworded:
