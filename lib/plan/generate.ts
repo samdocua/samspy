@@ -24,6 +24,10 @@
 //                         strength «относительно своего времени».
 //   v0.5.0 (2026-11-26) — settings.slang: current American slang, moderately (only here — copies
 //                         never pass through the writer).
+//   v0.5.1 (2026-11-26) — the writer: context of the task in the prompt (a couples' question app,
+//                         flirty is fine, never explicit); quotes inside JSON values repaired; if
+//                         nothing comes back — a second try without the competitor examples (spicy
+//                         ones can make the model refuse); the error names the stop reason.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AnalysisAccount, AnalysisJob, AnalysisPost } from '@/lib/analysis/types';
@@ -144,7 +148,12 @@ export async function loadExamples(
 const exampleText = (e: PlanExample, i: number) =>
   `#${i + 1} @${e.src} · ×${fmtX(e.strength)} to its time · ${e.likes} likes${e.hook ? ` · hook: ${e.hook}` : ''}${e.rubric ? ` · ${e.rubric}` : ''}\n${e.slides}${e.caption ? `\ncaption: ${e.caption}` : ''}`;
 
-async function claude(content: { text: string; cache?: boolean }[], maxTokens: number, attempt = 1): Promise<string> {
+interface Answer {
+  text: string;
+  stop: string; // stop_reason: end_turn / max_tokens / refusal…
+}
+
+async function claude(content: { text: string; cache?: boolean }[], maxTokens: number, attempt = 1): Promise<Answer> {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error('ANTHROPIC_API_KEY не задан.');
   const wellFormed = (t: string) =>
@@ -173,8 +182,38 @@ async function claude(content: { text: string; cache?: boolean }[], maxTokens: n
     return claude(content, maxTokens, attempt + 1);
   }
   if (!res.ok) throw new Error(`Claude HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const data = (await res.json()) as { content?: { type: string; text?: string }[] };
-  return (data.content ?? []).filter((c) => c.type === 'text').map((c) => c.text ?? '').join('\n');
+  const data = (await res.json()) as { content?: { type: string; text?: string }[]; stop_reason?: string };
+  return {
+    text: (data.content ?? []).filter((c) => c.type === 'text').map((c) => c.text ?? '').join('\n'),
+    stop: data.stop_reason ?? '?',
+  };
+}
+
+/** Escapes a " inside a JSON string value when it does not end the value (model wrote «"rizz"»). */
+function repairQuotes(json: string): string {
+  let out = '';
+  let inStr = false;
+  for (let i = 0; i < json.length; i++) {
+    const c = json[i];
+    if (c === '\\' && inStr) {
+      out += c + (json[i + 1] ?? '');
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      if (!inStr) inStr = true;
+      else {
+        const next = json.slice(i + 1).match(/^\s*(.)/)?.[1];
+        if (next && !',:]}'.includes(next)) {
+          out += '\\"';
+          continue;
+        }
+        inStr = false;
+      }
+    }
+    out += c;
+  }
+  return out;
 }
 
 /** One pass over all examples → the playbook (Russian explanations, original-language examples). */
@@ -198,7 +237,7 @@ ${examples.map(exampleText).join('\n\n')}`,
     ],
     6000
   );
-  return answer.trim();
+  return answer.text.trim();
 }
 
 /** Older snapshot of the source dossiers (12 best carousels each) — used when few slides are read. */
@@ -279,16 +318,18 @@ function parseItems(answer: string): Written[] {
       });
     }
   };
-  try {
-    const a = answer.indexOf('{');
-    const b = answer.lastIndexOf('}');
-    const j = JSON.parse(answer.slice(a, b + 1)) as { items?: Partial<Written>[] };
-    for (const it of j.items ?? []) take(it);
-    if (out.length) return out;
-  } catch {
-    /* salvage below: objects with a "questions" array (no nested braces) */
+  const a = answer.indexOf('{');
+  const b = answer.lastIndexOf('}');
+  for (const text of [answer.slice(a, b + 1), repairQuotes(answer.slice(a, b + 1))]) {
+    try {
+      const j = JSON.parse(text) as { items?: Partial<Written>[] };
+      for (const it of j.items ?? []) take(it);
+      if (out.length) return out;
+    } catch {
+      /* next: repaired quotes, then salvage objects one by one */
+    }
   }
-  for (const m of answer.matchAll(/\{[^{}]*"key"\s*:\s*"[^"]+"[^{}]*\}/g)) {
+  for (const m of repairQuotes(answer).matchAll(/\{[^{}]*"key"\s*:\s*"[^"]+"[^{}]*\}/g)) {
     try {
       take(JSON.parse(m[0]));
     } catch {
@@ -329,15 +370,16 @@ ${s.playbook}`
 ${s.brief || '(no source dossiers)'}`;
 
   // shared part of every batch first (cached by the API), then what changes per batch
-  const shared = `You write Instagram carousel posts for my accounts about questions for couples. Each carousel = a cover slide with a hook + one question per slide + a last slide that asks for a comment or a follow (the last slide is given, do not write it). The background photos already exist; your texts are overlaid on them, so keep every slide SHORT (cover ≤ 14 words, a question ≤ 22 words; answer options, if you use them, on separate lines like «A) …»).
+  const shared = `Context: I run a question-card app for couples and post carousels with conversation questions for partners. Flirty, playful and a bit spicy is the genre and is fine; keep everything non-explicit (no sexual acts or body details spelled out) so the posts stay Instagram-safe.
+
+You write Instagram carousel posts for my accounts about questions for couples. Each carousel = a cover slide with a hook + one question per slide + a last slide that asks for a comment or a follow (the last slide is given, do not write it). The background photos already exist; your texts are overlaid on them, so keep every slide SHORT (cover ≤ 14 words, a question ≤ 22 words; answer options, if you use them, on separate lines like «A) …»).
 
 Write in ${s.language}. Make the hooks and questions as catchy as the strongest examples: same kinds of hooks, same kinds of questions, same tone — but your own words; never copy a cover or a question, not even reworded closely. No emojis on the cover and questions, no numbering inside the questions.
 
 ${learned}
 ${s.slang ? `\n${SLANG_RULES}\n` : ''}${s.notes ? `\nMY WISHES: ${s.notes}\n` : ''}`;
 
-  const ex = examplesFor(s.examples ?? [], batch);
-  const perBatch = `${ex.length ? `STRONGEST CAROUSELS TO LEARN FROM (×N = how much it beat the account's ordinary posts of its time):\n${ex.map(exampleText).join('\n\n')}\n\n` : ''}ALREADY IN THE PLAN — never repeat these topics or questions, not even reworded:
+  const perBatchOf = (ex: PlanExample[]) => `${ex.length ? `STRONGEST CAROUSELS TO LEARN FROM (×N = how much it beat the account's ordinary posts of its time):\n${ex.map(exampleText).join('\n\n')}\n\n` : ''}ALREADY IN THE PLAN — never repeat these topics or questions, not even reworded:
 ${used.length ? used.map((u) => `- ${u}`).join('\n') : '(nothing yet)'}
 
 WRITE THESE CAROUSELS (one per line; rubric / hook are the target angle — make it fit them):
@@ -358,12 +400,15 @@ Inside text values never use the " character — use «» or ' instead.
 Answer with ONLY this JSON:
 {"items":[{"key":"...","title":"...","cover":"...","questions":["...","..."],"caption":"..."}]}`;
 
-  const answer = await claude(
-    [
-      { text: shared, cache: true },
-      { text: perBatch },
-    ],
-    Math.min(16000, 700 * slots.length + 800)
+  const maxTokens = Math.min(16000, 700 * slots.length + 800);
+  const first = await claude([{ text: shared, cache: true }, { text: perBatchOf(examplesFor(s.examples ?? [], batch)) }], maxTokens);
+  const items = parseItems(first.text);
+  if (items.length) return items;
+  // nothing came back (spicy examples can make the model refuse): once more with the playbook only
+  const second = await claude([{ text: shared, cache: true }, { text: perBatchOf([]) }], maxTokens);
+  const retry = parseItems(second.text);
+  if (retry.length) return retry;
+  throw new Error(
+    `Модель не вернула карусели (stop: ${first.stop} / ${second.stop}): ${(second.text || first.text).replace(/\s+/g, ' ').slice(0, 160) || 'пустой ответ'}`
   );
-  return parseItems(answer);
 }
