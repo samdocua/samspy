@@ -17,6 +17,7 @@
 //                         card shows the CTA kind and a link to the copied original; copy mode
 //                         «↻ Другой пост».
 //   v0.3.1 (2026-11-26) — neutral CTA wording (send / save / tag / follow), badge «нейтральный».
+//   v0.4.0 (2026-11-26) — mode «Вперемешку»: half copies, half new; the card says which.
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -174,7 +175,7 @@ export default function PlanView({ onSendToSlides }: { onSendToSlides?: (imp: Sl
               <p className="font-semibold">
                 {p.title}
                 <span className="ml-2 align-middle rounded-full border border-edge px-2 py-0.5 text-[11px] font-normal text-muted">
-                  {p.mode === 'copy' ? 'копии' : 'новые'}
+                  {p.mode === 'copy' ? 'копии' : p.mode === 'mix' ? 'вперемешку' : 'новые'}
                 </span>
               </p>
               <p className="mt-1 text-sm text-muted">
@@ -186,7 +187,7 @@ export default function PlanView({ onSendToSlides }: { onSendToSlides?: (imp: Sl
               </div>
               <p className="mt-1.5 text-xs text-muted">
                 {p.status === 'generating'
-                  ? `${p.mode === 'copy' ? 'Копирую' : 'Пишу'}: ${p.written} из ${p.total}…`
+                  ? `${p.mode === 'write' ? 'Пишу' : 'Собираю'}: ${p.written} из ${p.total}…`
                   : p.status === 'failed'
                     ? `Остановилось на ${p.written} из ${p.total}: ${p.error}`
                     : `Готово ${p.done} из ${p.total} · написано ${p.written}`}
@@ -284,6 +285,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
             [
               ['copy', 'Копии залетевших', 'тексты слайдов 1 в 1 с залетевших каруселей досье'],
               ['write', 'Новые от Claude', 'новые вопросы в стиле лучших каруселей досье'],
+              ['mix', 'Вперемешку', 'половина постов — копии, половина — новые от Claude'],
             ] as const
           ).map(([m, label, hint]) => (
             <button
@@ -300,7 +302,9 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
         <p className="mt-1 text-xs text-muted">
           {mode === 'copy'
             ? 'Каждый пост — одна залетевшая карусель конкурента (от самых сильных, без повторов между планами): обложка и все слайды целиком, с вариантами ответа, без названий бренда и рекламы. Последний слайд — наш призыв.'
-            : 'Claude пишет новые карусели в стиле лучших постов выбранных досье.'}
+            : mode === 'mix'
+              ? '50 на 50: копия, копия, новый, новый… Копии — залетевшие карусели 1 в 1, новые — Claude в их стиле. Призыв в конце чередуется отдельно, так что у копий и у новых оба типа призыва.'
+              : 'Claude пишет новые карусели в стиле лучших постов выбранных досье.'}
         </p>
       </div>
 
@@ -342,7 +346,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           <span className={labelCls}>Старт</span>
           <input type="date" value={start} onChange={(e) => setStart(e.target.value)} className={inputCls} />
         </label>
-        {mode === 'write' && (
+        {mode !== 'copy' && (
           <label className="block">
             <span className={labelCls}>Язык слайдов</span>
             <input value={language} onChange={(e) => setLanguage(e.target.value)} className={inputCls} />
@@ -356,10 +360,10 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           <span className={labelCls}>Постов в день на аккаунт</span>
           <input type="number" min={1} max={6} value={perDay} onChange={(e) => setPerDay(Number(e.target.value))} className={inputCls} />
         </label>
-        {mode === 'write' && (
+        {mode !== 'copy' && (
           <>
             <label className="block">
-              <span className={labelCls}>Вопросов в карусели: от</span>
+              <span className={labelCls}>{mode === 'mix' ? 'Вопросов в новых: от' : 'Вопросов в карусели: от'}</span>
               <input type="number" min={1} max={12} value={qMin} onChange={(e) => setQMin(Number(e.target.value))} className={inputCls} />
             </label>
             <label className="block">
@@ -389,9 +393,9 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
         <span className={labelCls}>Последний слайд, тип 2 — нейтральный призыв без слова (отправить, сохранить, отметить, подписаться), по одному на строку</span>
         <textarea value={follows} onChange={(e) => setFollows(e.target.value)} rows={5} className={`${inputCls} h-auto py-2`} />
       </label>
-      {mode === 'write' && (
+      {mode !== 'copy' && (
       <label className="block">
-        <span className={labelCls}>Пожелания (необязательно)</span>
+        <span className={labelCls}>Пожелания к новым (необязательно)</span>
         <textarea
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
@@ -408,7 +412,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           disabled={busy || !accList.length || !picked.size}
           className="h-10 rounded-lg bg-accent px-5 text-sm font-medium text-white disabled:opacity-40"
         >
-          {busy ? 'Создаю…' : mode === 'copy' ? `Собрать ${total} каруселей` : `Сгенерировать ${total} каруселей`}
+          {busy ? 'Создаю…' : mode === 'write' ? `Сгенерировать ${total} каруселей` : `Собрать ${total} каруселей`}
         </button>
         <button onClick={onCancel} className="text-sm text-muted hover:text-gray-900">
           Отмена
@@ -416,7 +420,9 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
         <span className="text-xs text-muted">
           {mode === 'copy'
             ? `≈ $${(total * PER_COPY_USD).toFixed(1)} + до ${total} кредитов ScrapeCreators · ≈ ${Math.max(1, Math.round(total / 12))} мин, собирается в фоне.`
-            : `≈ $${(total * PER_CAROUSEL_USD).toFixed(1)} · ≈ ${Math.max(1, Math.round((total / 8) * 0.75))} мин, пишется в фоне. Каждая карусель: обложка + ${qMin}–${qMax} вопросов + призыв.`}
+            : mode === 'mix'
+              ? `≈ $${((total / 2) * (PER_COPY_USD + PER_CAROUSEL_USD)).toFixed(1)} · ≈ ${Math.max(1, Math.round(total / 12))} мин, собирается в фоне.`
+              : `≈ $${(total * PER_CAROUSEL_USD).toFixed(1)} · ≈ ${Math.max(1, Math.round((total / 8) * 0.75))} мин, пишется в фоне. Каждая карусель: обложка + ${qMin}–${qMax} вопросов + призыв.`}
         </span>
       </div>
       {error && <p className="text-sm text-red-600">{error}</p>}
@@ -494,7 +500,9 @@ function PlanDetail({
           по досье {plan.sources.map((s) => `@${s}`).join(', ')} ·{' '}
           {plan.settings.mode === 'copy'
             ? 'копии залетевших'
-            : `${plan.settings.language} · вопросов ${plan.settings.q_min}–${plan.settings.q_max}`}
+            : plan.settings.mode === 'mix'
+              ? `вперемешку: копии + новые (вопросов ${plan.settings.q_min}–${plan.settings.q_max})`
+              : `${plan.settings.language} · вопросов ${plan.settings.q_min}–${plan.settings.q_max}`}
         </span>
         <span className="ml-auto flex gap-3">
           {card?.status === 'failed' && (
@@ -513,7 +521,7 @@ function PlanDetail({
           <div className="mb-1 text-xs text-muted">
             {card?.status === 'failed'
               ? `Остановилось: ${card.error}`
-              : `${plan.settings.mode === 'copy' ? 'Копирую' : 'Пишу'} карусели: ${written} из ${items.length}…`}
+              : `${plan.settings.mode === 'write' ? 'Пишу' : 'Собираю'} карусели: ${written} из ${items.length}…`}
           </div>
           <div className="h-1.5 overflow-hidden rounded-full bg-gray-100">
             <div className="h-full bg-accent transition-all" style={{ width: `${(100 * written) / Math.max(1, items.length)}%` }} />
@@ -591,7 +599,7 @@ function ItemCard({
     return data;
   }
 
-  const isCopy = plan.settings.mode === 'copy';
+  const isCopy = (it.mode ?? (plan.settings.mode === 'copy' ? 'copy' : 'write')) === 'copy';
 
   async function regenerate() {
     if (!confirm(isCopy ? 'Заменить на другую залетевшую карусель?' : 'Переписать эту карусель заново?')) return;
@@ -639,6 +647,9 @@ function ItemCard({
       <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px]">
         <span className="font-mono font-semibold">Пост {it.slot}</span>
         <span className={`rounded-full px-2 py-0.5 ${STATUS_CLS[it.status]}`}>{STATUS_LABEL[it.status]}</span>
+        {plan.settings.mode === 'mix' && (
+          <span className="rounded-full bg-gray-900 px-2 py-0.5 text-white">{isCopy ? 'копия' : 'новый'}</span>
+        )}
         {it.rubric && <span className="rounded-full border border-edge px-2 py-0.5 text-muted">{it.rubric}</span>}
         {it.hook && <span className="rounded-full border border-edge px-2 py-0.5 text-muted">{it.hook}</span>}
         <span className="rounded-full border border-accent/40 bg-accent/5 px-2 py-0.5 font-mono font-semibold text-accent" title={ctaText}>

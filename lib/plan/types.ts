@@ -9,6 +9,7 @@
 //                         'comment' (keyword) / 'follow' (follow for more) — DEFAULT_FOLLOW_CTAS;
 //                         follow posts get a comment-bait caption (CAPTION_BAITS).
 //   v0.3.1 (2026-11-26) — neutral last slides vary: send / save / tag / follow / try.
+//   v0.4.0 (2026-11-26) — mode 'mix': half copies, half new (item.mode per post).
 
 /** Last slides that ask to comment a keyword. Universal (fit any post). Rotated. */
 export const DEFAULT_CTAS = [
@@ -49,7 +50,8 @@ export function keywordOf(cta: string): string | null {
 
 export type PlanStatus = 'generating' | 'done' | 'failed';
 export type ItemStatus = 'draft' | 'in_slides' | 'done';
-export type PlanMode = 'write' | 'copy';
+export type PlanMode = 'write' | 'copy' | 'mix';
+export type ItemMode = 'write' | 'copy';
 export type CtaKind = 'comment' | 'follow';
 
 /** A competitor carousel waiting to be copied (mode 'copy'). */
@@ -100,6 +102,7 @@ export interface PlanItem {
   hook: string | null;
   title: string | null;
   slides: string[];
+  mode: ItemMode | null; // mix plans: how this post is made; null = the plan's mode
   cta_kind: CtaKind | null; // older items: null = 'comment'
   cta_variant: number | null; // index in the list of its kind
   caption: string | null;
