@@ -29,9 +29,11 @@
 //   v0.6.0 (2026-11-26) — new posts in batches of 4, then checked: script rules (lengths, count,
 //                         repeats, near-copies of competitors) + a second model (GPT) approves or
 //                         fixes each; item.review keeps the verdict and the note.
+//   v0.6.1 (2026-11-26) — copies get a proofreading (GPT: OCR typos, cut words, missing full stops;
+//                         wording never changes) as the last phase of the plan; a replaced copy too.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { buildPool, normSlide, textsOf } from './copy';
+import { buildPool, normSlide, slidesFromOcr, textsOf } from './copy';
 import {
   buildBrief,
   buildCombos,
@@ -43,7 +45,7 @@ import {
   type WriteSlot,
   type Written,
 } from './generate';
-import { codeIssues, competitorLines, reviewItems } from './review';
+import { codeIssues, competitorLines, proofreadCopies, reviewItems, type CopyDraft } from './review';
 import {
   CAPTION_BAITS,
   ctaTextOf,
@@ -355,10 +357,17 @@ async function fillFromPool(
         source_username: src.username,
         source_shortcode: src.shortcode,
         source_url: src.url,
+        review: null, // a new text: proofread again
         updated_at: nowIso(),
       })
       .eq('id', it.id);
-    Object.assign(it, { source_shortcode: src.shortcode, slides: [...got.slides, cta] });
+    Object.assign(it, {
+      source_username: src.username,
+      source_shortcode: src.shortcode,
+      source_url: src.url,
+      slides: [...got.slides, cta],
+      review: null,
+    });
     return true;
   }
   return true; // tried enough for this slot this time; it stays empty and comes back next step
@@ -386,6 +395,59 @@ async function stepCopy(sb: SupabaseClient, plan: ContentPlan, items: PlanItem[]
   if (ranOut) throw new Error('Залетевшие карусели выбранных досье закончились — добавь досье и нажми «Продолжить».');
 }
 
+// --- copies: proofreading ------------------------------------------------------------------------
+
+const PROOF_BATCH = 6;
+
+/** The competitor's caption + the same hook (first words of the cover) on their other carousels. */
+async function copyContext(sb: SupabaseClient, it: PlanItem): Promise<Pick<CopyDraft, 'caption' | 'siblings'>> {
+  if (!it.source_username || !it.source_shortcode) return { caption: '', siblings: [] };
+  const { data: acc } = await sb.from('analysis_accounts').select('last_job_id').eq('username', it.source_username).maybeSingle();
+  const jobId = acc?.last_job_id as string | undefined;
+  if (!jobId) return { caption: '', siblings: [] };
+  const { data: post } = await sb
+    .from('analysis_posts')
+    .select('caption')
+    .eq('job_id', jobId)
+    .eq('shortcode', it.source_shortcode)
+    .maybeSingle<{ caption: string | null }>();
+  const head = normSlide(it.slides[0] ?? '').split(' ').slice(0, 4).join(' ');
+  let siblings: string[] = [];
+  if (head.split(' ').length >= 3) {
+    const { data } = await sb
+      .from('analysis_posts')
+      .select('ocr_text')
+      .eq('job_id', jobId)
+      .eq('kind', 'carousel')
+      .neq('shortcode', it.source_shortcode)
+      .ilike('ocr_text', `%${head.split(' ').join('%')}%`)
+      .limit(12)
+      .returns<{ ocr_text: string | null }[]>();
+    const covers = (data ?? [])
+      .map((r) => slidesFromOcr(r.ocr_text ?? '')[0]?.replace(/\s+/g, ' ').trim())
+      .filter((x): x is string => !!x);
+    siblings = Array.from(new Set(covers)).slice(0, 6);
+  }
+  return { caption: post?.caption ?? '', siblings };
+}
+
+async function proofreadStep(sb: SupabaseClient, copies: PlanItem[]) {
+  const drafts: CopyDraft[] = await Promise.all(
+    copies.map(async (it) => ({ key: it.id, slides: it.slides.slice(0, -1), ...(await copyContext(sb, it)) }))
+  );
+  const fixed = await proofreadCopies(drafts);
+  await Promise.all(
+    copies.map((it) => {
+      const f = fixed.get(it.id);
+      if (!f) return null;
+      return sb
+        .from('content_plan_items')
+        .update({ slides: [...f.slides, it.slides[it.slides.length - 1]], review: f.review, updated_at: nowIso() })
+        .eq('id', it.id);
+    })
+  );
+}
+
 // --- step / edit ----------------------------------------------------------------------------------
 
 /** Fills one batch of empty slots. Returns false when another caller holds the lock / nothing to do. */
@@ -403,6 +465,12 @@ export async function stepPlan(sb: SupabaseClient, planId: string): Promise<bool
     const items = await allItems(sb, planId);
     const empty = items.filter((i) => !i.slides.length);
     if (!empty.length) {
+      // last: proofreading of the copies (OCR typos, cut words) — 6 per step
+      const unread = items.filter((i) => itemModeOf(plan.settings, i) === 'copy' && i.slides.length && !i.review);
+      if (unread.length) {
+        await proofreadStep(sb, unread.slice(0, PROOF_BATCH));
+        if (unread.length > PROOF_BATCH) return true;
+      }
       await sb.from('content_plans').update({ status: 'done', error: null, updated_at: nowIso() }).eq('id', planId);
       return true;
     }
@@ -434,9 +502,7 @@ export async function stepPlan(sb: SupabaseClient, planId: string): Promise<bool
       if (!n) throw new Error('Модель не вернула ни одной карусели — нажми «Продолжить».');
       for (const it of batch) if (written.some((w) => w.key === it.id && w.questions.length)) it.slides = ['written'];
     }
-    if (!items.some((i) => !i.slides.length)) {
-      await sb.from('content_plans').update({ status: 'done', error: null, updated_at: nowIso() }).eq('id', planId);
-    }
+    // when every slot is filled, the next step proofreads the copies and closes the plan
   } catch (e) {
     await sb.from('content_plans').update({ status: 'failed', error: errMsg(e), updated_at: nowIso() }).eq('id', planId);
   } finally {
@@ -475,6 +541,7 @@ export async function regenerateItem(sb: SupabaseClient, itemId: string): Promis
       .update({ settings: { ...plan.settings, copy_pool: pool } })
       .eq('id', plan.id);
     if (!ok || it.source_shortcode === before) throw new Error('Не нашлось другой залетевшей карусели — добавь досье.');
+    await proofreadStep(sb, [it]);
   } else {
     const drafts = await writeItems(
       plan.settings,
