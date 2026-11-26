@@ -1,11 +1,15 @@
-// SamSpy — «План»: types (mirror supabase/migration-009.sql)
+// SamSpy — «План»: types (mirror supabase/migration-009.sql, migration-014.sql)
 //
 // Version history:
 //   v0.1.0 (2026-11-22) — plans, items, settings.
 //   v0.2.0 (2026-11-23) — CTA = fixed universal texts with a comment keyword (MORE / LIST /
 //                         SEND), rotated across posts; keywordOf() finds the word.
+//   v0.3.0 (2026-11-26) — mode 'copy': slide texts 1:1 from competitors' winning carousels
+//                         (settings.copy_pool, item.source_*); CTA kinds alternate post by post:
+//                         'comment' (keyword) / 'follow' (follow for more) — DEFAULT_FOLLOW_CTAS;
+//                         follow posts get a comment-bait caption (CAPTION_BAITS).
 
-/** Default last slides: universal (fit any post), each with a comment keyword. Rotated. */
+/** Last slides that ask to comment a keyword. Universal (fit any post). Rotated. */
 export const DEFAULT_CTAS = [
   'Comment MORE and I’ll send you more questions 👇',
   'Want more? Comment LIST and I’ll send them',
@@ -15,6 +19,24 @@ export const DEFAULT_CTAS = [
   'Comment SEND and they’re yours',
 ];
 
+/** Neutral last slides: follow for more. Universal. Rotated. */
+export const DEFAULT_FOLLOW_CTAS = [
+  'Follow for more questions like these',
+  'Follow for new questions every day',
+  'Follow so you don’t miss the next ones',
+  'Follow for more couple questions',
+  'Follow for your next date night questions',
+];
+
+/** Captions of «follow» posts in copy mode: invite a comment without a keyword. Rotated. */
+export const CAPTION_BAITS = [
+  'Which one would you answer first? 👇',
+  'Be honest — which question was the hardest? 👇',
+  'Answer one in the comments 👇',
+  'Which one would you never answer? 👇',
+  'Send this to your partner and compare answers',
+];
+
 /** The comment keyword of a CTA text: the first word in capitals (3+ letters). */
 export function keywordOf(cta: string): string | null {
   return cta.match(/\b[A-Z]{3,}\b/)?.[0] ?? null;
@@ -22,15 +44,29 @@ export function keywordOf(cta: string): string | null {
 
 export type PlanStatus = 'generating' | 'done' | 'failed';
 export type ItemStatus = 'draft' | 'in_slides' | 'done';
+export type PlanMode = 'write' | 'copy';
+export type CtaKind = 'comment' | 'follow';
+
+/** A competitor carousel waiting to be copied (mode 'copy'). */
+export interface CopySource {
+  username: string;
+  job_id: string;
+  shortcode: string;
+  url: string;
+  ratio: number | null;
+}
 
 export interface PlanSettings {
+  mode?: PlanMode; // missing on older plans = 'write'
   language: string; // 'English'
-  q_min: number; // questions per carousel
+  q_min: number; // questions per carousel (mode 'write')
   q_max: number;
-  cta_variants: string[]; // last slide texts with a comment keyword, rotated across posts
+  cta_variants: string[]; // last slides with a comment keyword, rotated
+  follow_variants?: string[]; // last slides «follow for more», rotated (alternate with the above)
   notes: string; // free wishes for the writer
-  brief: string; // snapshot of the source dossiers (built at creation)
+  brief: string; // snapshot of the source dossiers (mode 'write')
   combos: { rubric: string; hook: string; weight: number }[]; // what wins at the sources
+  copy_pool?: CopySource[]; // mode 'copy': winners not used yet, best first
 }
 
 export interface ContentPlan {
@@ -59,8 +95,12 @@ export interface PlanItem {
   hook: string | null;
   title: string | null;
   slides: string[];
-  cta_variant: number | null; // index in settings.cta_variants
+  cta_kind: CtaKind | null; // older items: null = 'comment'
+  cta_variant: number | null; // index in the list of its kind
   caption: string | null;
+  source_username: string | null;
+  source_shortcode: string | null;
+  source_url: string | null;
   status: ItemStatus;
   created_at: string;
   updated_at: string;
@@ -69,6 +109,7 @@ export interface PlanItem {
 export interface PlanCard {
   id: string;
   title: string;
+  mode: PlanMode;
   accounts: string[];
   days: number;
   per_day: number;
@@ -80,4 +121,17 @@ export interface PlanCard {
   written: number;
   done: number;
   created_at: string;
+}
+
+/** The last slide of an item (its CTA text). */
+export function ctaTextOf(s: PlanSettings, it: Pick<PlanItem, 'cta_kind' | 'cta_variant'>): string {
+  const list =
+    it.cta_kind === 'follow'
+      ? s.follow_variants?.length
+        ? s.follow_variants
+        : DEFAULT_FOLLOW_CTAS
+      : s.cta_variants?.length
+        ? s.cta_variants
+        : DEFAULT_CTAS;
+  return list[(it.cta_variant ?? 0) % list.length];
 }
