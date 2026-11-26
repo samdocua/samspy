@@ -67,6 +67,10 @@
 //                         goes to the main model; one short line about skipped posts in ai_error.
 //   v0.6.3 (2026-11-26) — posts the fast model leaves out of its answer go to the main model one by
 //                         one before they count as skipped.
+//   v0.6.4 (2026-11-26) — «Распознать слайды»: a strongest carousel with no slide links gets them
+//                         from the post itself (1 credit), and each is read in full once per run
+//                         (slides.tried) — before, posts with only a cover link were re-read every
+//                         step forever.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -94,7 +98,7 @@ import {
   transcribe,
   type PostForAI,
 } from './ai';
-import { scCommentsPage, scEnabled, ScFatal, ScNotFound, scPostsPage, scProfile } from '@/lib/scrape/sc';
+import { scCommentsPage, scEnabled, ScFatal, ScNotFound, scPost, scPostsPage, scProfile } from '@/lib/scrape/sc';
 import { topWinners } from './winners';
 import { cardSummary, computeStats, groupStats, hasCta, metricOf, ratioOf } from './stats';
 import type {
@@ -578,13 +582,29 @@ async function stepSlides(sb: SupabaseClient, job: AnalysisJob, deadline: number
         .in('id', st.top)
         .returns<SlidePost[]>()
     : { data: [] as SlidePost[] };
-  const full = (top ?? []).filter((p) => p.ocr_text !== '' && !ocrCoversSlides(p.ocr_text, p.slides));
+  const tried = new Set((st.tried ??= []));
+  const full = (top ?? []).filter((p) => !tried.has(p.id) && p.ocr_text !== '' && !ocrCoversSlides(p.ocr_text, p.slides));
   if (full.length) {
     let next = 0;
     const worker = async () => {
       while (next < full.length && Date.now() < deadline - 20_000) {
         const p = full[next++];
-        await readSlides(sb, job, p, p.slide_urls?.length ? p.slide_urls : p.display_url ? [p.display_url] : []);
+        let urls = p.slide_urls ?? [];
+        // only the cover link is known (old dossiers) — the post itself has every slide
+        if (urls.length < 2 && (p.slides ?? 2) > 1 && scEnabled()) {
+          try {
+            const post = await scPost(`https://www.instagram.com/p/${p.shortcode}/`, { until: deadline - 15_000 });
+            const fresh = (post.childPosts?.map((c) => c.displayUrl).filter((u): u is string => !!u) ?? []).slice(0, 20);
+            if (fresh.length) {
+              urls = fresh;
+              await sb.from('analysis_posts').update({ slide_urls: fresh }).eq('id', p.id);
+            }
+          } catch {
+            /* keep what we have */
+          }
+        }
+        await readSlides(sb, job, p, urls.length ? urls : p.display_url ? [p.display_url] : []);
+        st.tried!.push(p.id);
       }
     };
     await Promise.all(Array.from({ length: SLIDES_TOP_CONCURRENCY }, worker));
