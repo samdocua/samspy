@@ -21,6 +21,9 @@
 //                         them into «№N» links); × figures rounded.
 //   v0.3.3 (2026-11-23) — texts sent to Claude drop half-emoji left by .slice() (lone UTF-16
 //                         surrogates made the API reject the dossier request: «invalid JSON»).
+//   v0.4.0 (2026-11-26) — cleanCarouselSlides(): OCR of a competitor carousel → its slide texts
+//                         verbatim, without brand names / app promos / their closing CTA («План»,
+//                         copy mode).
 
 import sharp from 'sharp';
 import type { Breakdown, DossierAI, Vocab } from './types';
@@ -136,6 +139,40 @@ export async function transcribe(videoUrl: string): Promise<string | null> {
 }
 
 // --- carousel slides text (Claude vision) ---------------------------------------------------
+/**
+ * OCR of a competitor carousel → slide texts to reuse on my own images: questions, statements and
+ * answer options verbatim; brand names, taglines, @handles, app promos and the closing call to
+ * action removed. Null when the model answer cannot be read (the caller falls back to rules).
+ */
+export async function cleanCarouselSlides(ocr: string, username: string): Promise<string[] | null> {
+  const answer = await claude(
+    TAG_MODEL,
+    [
+      {
+        type: 'text',
+        text:
+          `Below is the OCR text of an Instagram carousel by @${username}, slide by slide («--- N ---»). ` +
+          'I will put the same texts on my own images. Return the text of every slide:\n' +
+          '- Keep every question, statement and answer option (A) B) C) …) EXACTLY as written: do not rephrase, fix, shorten or translate; keep the line breaks.\n' +
+          '- Remove only: brand / app names and watermarks (the account name, «… app», «… cards»), taglines, @handles, app promos ' +
+          '(«search for more questions», «search today», «download», «Get», «link in bio») and a closing call to action ' +
+          '(follow / comment / save / share / send this) — wherever they appear, even in the middle of a slide.\n' +
+          '- Drop slides that become empty or were only a promo. Slide 1 is the cover (its hook).\n' +
+          'Answer with JSON only: {"slides": ["text of slide 1", "text of slide 2", …]}\n\n' +
+          ocr,
+      },
+    ],
+    2500
+  );
+  try {
+    const j = parseJson<{ slides?: unknown[] }>(answer);
+    const slides = (j.slides ?? []).map((x) => String(x ?? '').trim()).filter(Boolean);
+    return slides.length ? slides : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function ocrCarousel(slideUrls: string[]): Promise<string> {
   const images: Content[] = [];
   for (const [i, url] of slideUrls.slice(0, 10).entries()) {

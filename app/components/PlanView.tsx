@@ -1,8 +1,9 @@
 // SamSpy — PlanView («План» tab, Instagram carousels)
 //
 // Content plan: source dossiers («Анализ») + my accounts (I0001, I0002…) → days × posts per
-// day carousels written by Claude (cover hook + questions + comment-bait last slide +
-// caption). Calendar per account; every carousel can be edited, rewritten, copied, sent to
+// day carousels: either slide texts copied 1:1 from the sources' winning carousels, or new ones
+// written by Claude (cover hook + questions). The last slide alternates post by post: comment a
+// keyword / follow for more. Calendar per account; every carousel can be edited, rewritten, copied, sent to
 // «Слайды» (→ «в Слайдах»; «Скачать все» there marks it «готово»). While the tab is open it
 // keeps writing plans that are still generating; the background worker writes them too.
 //
@@ -11,11 +12,25 @@
 //   v0.2.0 (2026-11-23) — universal CTA texts with a keyword (MORE / LIST / SEND), one per line
 //                         in the form; card shows the keyword.
 //   v0.2.1 (2026-11-23) — plans are written in the background (worker), copy updated.
+//   v0.3.0 (2026-11-26) — mode «Копии залетевших» (default) / «Новые от Claude»; «follow» last
+//                         slides alternate with the keyword ones (own list in the form); the
+//                         card shows the CTA kind and a link to the copied original; copy mode
+//                         «↻ Другой пост».
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SlidesImport } from '@/lib/carousels/toSlides';
-import { DEFAULT_CTAS, keywordOf, type ContentPlan, type ItemStatus, type PlanCard, type PlanItem } from '@/lib/plan/types';
+import {
+  ctaTextOf,
+  DEFAULT_CTAS,
+  DEFAULT_FOLLOW_CTAS,
+  keywordOf,
+  type ContentPlan,
+  type ItemStatus,
+  type PlanCard,
+  type PlanItem,
+  type PlanMode,
+} from '@/lib/plan/types';
 import type { AccountCard } from '@/lib/analysis/types';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -27,6 +42,7 @@ const STATUS_CLS: Record<ItemStatus, string> = {
   done: 'bg-green-100 text-green-800',
 };
 const PER_CAROUSEL_USD = 0.02; // rough: Claude Sonnet, batch of 8 with the brief
+const PER_COPY_USD = 0.01; // rough: Haiku OCR of a carousel without text + cleanup
 
 const inputCls = 'h-10 w-full rounded-lg border border-edge bg-white px-3 text-sm outline-none focus:border-accent';
 const labelCls = 'mb-1 block text-xs font-medium text-muted';
@@ -154,7 +170,12 @@ export default function PlanView({ onSendToSlides }: { onSendToSlides?: (imp: Sl
               onClick={() => setOpenId(p.id)}
               className="cursor-pointer rounded-2xl border border-edge bg-white p-4 hover:border-accent"
             >
-              <p className="font-semibold">{p.title}</p>
+              <p className="font-semibold">
+                {p.title}
+                <span className="ml-2 align-middle rounded-full border border-edge px-2 py-0.5 text-[11px] font-normal text-muted">
+                  {p.mode === 'copy' ? 'копии' : 'новые'}
+                </span>
+              </p>
               <p className="mt-1 text-sm text-muted">
                 {p.accounts.join(', ')} · {p.days} дн. × {p.per_day} · с {fmtDay(dateOf(p.start_date, 1))}
               </p>
@@ -164,7 +185,7 @@ export default function PlanView({ onSendToSlides }: { onSendToSlides?: (imp: Sl
               </div>
               <p className="mt-1.5 text-xs text-muted">
                 {p.status === 'generating'
-                  ? `Пишу: ${p.written} из ${p.total}…`
+                  ? `${p.mode === 'copy' ? 'Копирую' : 'Пишу'}: ${p.written} из ${p.total}…`
                   : p.status === 'failed'
                     ? `Остановилось на ${p.written} из ${p.total}: ${p.error}`
                     : `Готово ${p.done} из ${p.total} · написано ${p.written}`}
@@ -200,7 +221,9 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
   const [qMin, setQMin] = useState(4);
   const [qMax, setQMax] = useState(6);
   const [language, setLanguage] = useState('English');
+  const [mode, setMode] = useState<PlanMode>('copy');
   const [ctas, setCtas] = useState(DEFAULT_CTAS.join('\n'));
+  const [follows, setFollows] = useState(DEFAULT_FOLLOW_CTAS.join('\n'));
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -228,6 +251,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title,
+          mode,
           accounts: accList,
           start_date: start,
           days,
@@ -236,6 +260,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           q_max: qMax,
           language,
           cta_variants: ctas.split('\n').map((l) => l.trim()).filter(Boolean),
+          follow_variants: follows.split('\n').map((l) => l.trim()).filter(Boolean),
           notes,
           sources: Array.from(picked),
         }),
@@ -251,6 +276,33 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
 
   return (
     <div className="space-y-4 rounded-2xl border border-edge bg-white p-5">
+      <div>
+        <span className={labelCls}>Откуда тексты слайдов</span>
+        <div className="flex flex-wrap gap-2 text-sm">
+          {(
+            [
+              ['copy', 'Копии залетевших', 'тексты слайдов 1 в 1 с залетевших каруселей досье'],
+              ['write', 'Новые от Claude', 'новые вопросы в стиле лучших каруселей досье'],
+            ] as const
+          ).map(([m, label, hint]) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setMode(m)}
+              title={hint}
+              className={`rounded-full px-4 py-1.5 font-medium ${mode === m ? 'bg-gray-900 text-white' : 'border border-edge bg-white'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-1 text-xs text-muted">
+          {mode === 'copy'
+            ? 'Каждый пост — одна залетевшая карусель конкурента (от самых сильных, без повторов между планами): обложка и все слайды целиком, с вариантами ответа, без названий бренда и рекламы. Последний слайд — наш призыв.'
+            : 'Claude пишет новые карусели в стиле лучших постов выбранных досье.'}
+        </p>
+      </div>
+
       <div>
         <span className={labelCls}>По каким досье («Анализ»)</span>
         {sources.length ? (
@@ -289,10 +341,12 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           <span className={labelCls}>Старт</span>
           <input type="date" value={start} onChange={(e) => setStart(e.target.value)} className={inputCls} />
         </label>
-        <label className="block">
-          <span className={labelCls}>Язык слайдов</span>
-          <input value={language} onChange={(e) => setLanguage(e.target.value)} className={inputCls} />
-        </label>
+        {mode === 'write' && (
+          <label className="block">
+            <span className={labelCls}>Язык слайдов</span>
+            <input value={language} onChange={(e) => setLanguage(e.target.value)} className={inputCls} />
+          </label>
+        )}
         <label className="block">
           <span className={labelCls}>Дней</span>
           <input type="number" min={1} max={60} value={days} onChange={(e) => setDays(Number(e.target.value))} className={inputCls} />
@@ -301,20 +355,24 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           <span className={labelCls}>Постов в день на аккаунт</span>
           <input type="number" min={1} max={6} value={perDay} onChange={(e) => setPerDay(Number(e.target.value))} className={inputCls} />
         </label>
-        <label className="block">
-          <span className={labelCls}>Вопросов в карусели: от</span>
-          <input type="number" min={1} max={12} value={qMin} onChange={(e) => setQMin(Number(e.target.value))} className={inputCls} />
-        </label>
-        <label className="block">
-          <span className={labelCls}>до</span>
-          <input type="number" min={qMin} max={12} value={qMax} onChange={(e) => setQMax(Number(e.target.value))} className={inputCls} />
-        </label>
+        {mode === 'write' && (
+          <>
+            <label className="block">
+              <span className={labelCls}>Вопросов в карусели: от</span>
+              <input type="number" min={1} max={12} value={qMin} onChange={(e) => setQMin(Number(e.target.value))} className={inputCls} />
+            </label>
+            <label className="block">
+              <span className={labelCls}>до</span>
+              <input type="number" min={qMin} max={12} value={qMax} onChange={(e) => setQMax(Number(e.target.value))} className={inputCls} />
+            </label>
+          </>
+        )}
       </div>
 
       <label className="block">
         <span className={labelCls}>
-          Последний слайд — призыв в комменты: универсальные тексты со СЛОВОМ заглавными, по одному на строку.
-          Чередуются по постам — потом сравнишь, какой собирает больше комментов
+          Последний слайд, тип 1 — призыв написать СЛОВО в комментариях (заглавными), по одному тексту на строку.
+          Посты чередуются: один с таким призывом, следующий с призывом подписаться (ниже)
         </span>
         <textarea value={ctas} onChange={(e) => setCtas(e.target.value)} rows={6} className={`${inputCls} h-auto py-2`} />
         {ctas
@@ -327,6 +385,11 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           ))}
       </label>
       <label className="block">
+        <span className={labelCls}>Последний слайд, тип 2 — нейтральный призыв подписаться, по одному тексту на строку</span>
+        <textarea value={follows} onChange={(e) => setFollows(e.target.value)} rows={5} className={`${inputCls} h-auto py-2`} />
+      </label>
+      {mode === 'write' && (
+      <label className="block">
         <span className={labelCls}>Пожелания (необязательно)</span>
         <textarea
           value={notes}
@@ -336,6 +399,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           className={`${inputCls} h-auto py-2`}
         />
       </label>
+      )}
 
       <div className="flex flex-wrap items-center gap-3">
         <button
@@ -343,14 +407,15 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           disabled={busy || !accList.length || !picked.size}
           className="h-10 rounded-lg bg-accent px-5 text-sm font-medium text-white disabled:opacity-40"
         >
-          {busy ? 'Создаю…' : `Сгенерировать ${total} каруселей`}
+          {busy ? 'Создаю…' : mode === 'copy' ? `Собрать ${total} каруселей` : `Сгенерировать ${total} каруселей`}
         </button>
         <button onClick={onCancel} className="text-sm text-muted hover:text-gray-900">
           Отмена
         </button>
         <span className="text-xs text-muted">
-          ≈ ${(total * PER_CAROUSEL_USD).toFixed(1)} · ≈ {Math.max(1, Math.round((total / 8) * 0.75))} мин, пишется в фоне.
-          Каждая карусель: обложка + {qMin}–{qMax} вопросов + призыв.
+          {mode === 'copy'
+            ? `≈ $${(total * PER_COPY_USD).toFixed(1)} + до ${total} кредитов ScrapeCreators · ≈ ${Math.max(1, Math.round(total / 12))} мин, собирается в фоне.`
+            : `≈ $${(total * PER_CAROUSEL_USD).toFixed(1)} · ≈ ${Math.max(1, Math.round((total / 8) * 0.75))} мин, пишется в фоне. Каждая карусель: обложка + ${qMin}–${qMax} вопросов + призыв.`}
         </span>
       </div>
       {error && <p className="text-sm text-red-600">{error}</p>}
@@ -425,8 +490,10 @@ function PlanDetail({
         </button>
         <h2 className="text-base font-semibold">{plan.title}</h2>
         <span className="text-xs text-muted">
-          по досье {plan.sources.map((s) => `@${s}`).join(', ')} · {plan.settings.language} · вопросов {plan.settings.q_min}–
-          {plan.settings.q_max}
+          по досье {plan.sources.map((s) => `@${s}`).join(', ')} ·{' '}
+          {plan.settings.mode === 'copy'
+            ? 'копии залетевших'
+            : `${plan.settings.language} · вопросов ${plan.settings.q_min}–${plan.settings.q_max}`}
         </span>
         <span className="ml-auto flex gap-3">
           {card?.status === 'failed' && (
@@ -443,7 +510,9 @@ function PlanDetail({
       {written < items.length && (
         <div>
           <div className="mb-1 text-xs text-muted">
-            {card?.status === 'failed' ? `Остановилось: ${card.error}` : `Пишу карусели: ${written} из ${items.length}…`}
+            {card?.status === 'failed'
+              ? `Остановилось: ${card.error}`
+              : `${plan.settings.mode === 'copy' ? 'Копирую' : 'Пишу'} карусели: ${written} из ${items.length}…`}
           </div>
           <div className="h-1.5 overflow-hidden rounded-full bg-gray-100">
             <div className="h-full bg-accent transition-all" style={{ width: `${(100 * written) / Math.max(1, items.length)}%` }} />
@@ -521,9 +590,11 @@ function ItemCard({
     return data;
   }
 
+  const isCopy = plan.settings.mode === 'copy';
+
   async function regenerate() {
-    if (!confirm('Переписать эту карусель заново?')) return;
-    setBusy('Переписываю…');
+    if (!confirm(isCopy ? 'Заменить на другую залетевшую карусель?' : 'Переписать эту карусель заново?')) return;
+    setBusy(isCopy ? 'Ищу…' : 'Переписываю…');
     try {
       const res = await fetch(`/api/plans/items/${it.id}/regenerate`, { method: 'POST' });
       const data = await res.json();
@@ -553,14 +624,13 @@ function ItemCard({
   if (!it.slides.length) {
     return (
       <div className="flex min-h-[160px] items-center justify-center rounded-xl border border-dashed border-edge bg-white p-4 text-xs text-muted">
-        Пост {it.slot} · ещё пишется…
+        Пост {it.slot} · {isCopy ? 'ещё копируется…' : 'ещё пишется…'}
       </div>
     );
   }
 
-  const ctaIdx = it.cta_variant ?? 0;
-  const ctaText = plan.settings.cta_variants[ctaIdx % plan.settings.cta_variants.length] ?? '';
-  const ctaLabel = keywordOf(ctaText) ?? String.fromCharCode(65 + ctaIdx);
+  const ctaText = ctaTextOf(plan.settings, it);
+  const ctaLabel = it.cta_kind === 'follow' ? 'подписка' : keywordOf(ctaText) ?? 'призыв';
   const lastIsCta = it.slides[it.slides.length - 1] === ctaText;
 
   return (
@@ -573,6 +643,17 @@ function ItemCard({
         <span className="rounded-full border border-accent/40 bg-accent/5 px-2 py-0.5 font-mono font-semibold text-accent" title={ctaText}>
           {ctaLabel}
         </span>
+        {it.source_url && (
+          <a
+            href={it.source_url}
+            target="_blank"
+            rel="noreferrer"
+            className="ml-auto text-muted hover:text-accent"
+            title="Оригинал, с которого скопированы тексты"
+          >
+            оригинал @{it.source_username} ↗
+          </a>
+        )}
       </div>
       {it.title && <p className="mb-2 font-semibold leading-snug">{it.title}</p>}
 
@@ -639,7 +720,7 @@ function ItemCard({
             ✎ Править
           </button>
           <button onClick={() => void regenerate()} disabled={!!busy} className="text-muted hover:text-gray-900">
-            {busy ?? '↻ Заново'}
+            {busy ?? (isCopy ? '↻ Другой пост' : '↻ Заново')}
           </button>
           <button
             onClick={() => void patch({ status: it.status === 'done' ? 'draft' : 'done' })}

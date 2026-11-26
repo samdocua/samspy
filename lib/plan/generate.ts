@@ -10,6 +10,7 @@
 //   v0.1.0 (2026-11-22) — initial.
 //   v0.2.0 (2026-11-23) — CTA = universal text with a keyword (not written per post); the
 //                         caption must repeat the same keyword.
+//   v0.3.0 (2026-11-26) — «follow» last slides: the caption invites a comment, no keyword.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { ratioOf } from '@/lib/analysis/stats';
@@ -195,7 +196,7 @@ For every carousel:
 - title: the topic in 3–8 words (for my calendar), in Russian
 - cover: the hook text of slide 1, in ${s.language} (e.g. «SEND THIS TO YOUR BOYFRIEND — he has to answer one question»; vary the wording between carousels)
 - questions: exactly the number asked, each a separate slide, in ${s.language}, all different and fresh
-- caption: 1–2 short lines in ${s.language} that repeat the comment request of the last slide with the SAME keyword in capitals (universal: do not address him / her; no «part 2»; no hashtags)
+- caption: 1–2 short lines in ${s.language}, no hashtags, universal (do not address him / her; no «part 2»). If the last slide asks to comment a KEYWORD in capitals, repeat that request with the SAME keyword. If the last slide asks to follow, invite a comment instead (e.g. which question they would answer first) — no keyword
 Inside text values never use the " character — use «» or ' instead.
 
 Answer with ONLY this JSON:
