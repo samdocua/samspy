@@ -23,6 +23,7 @@
 //   v0.6.0 (2026-11-26) — «Американский сленг» checkbox for new posts (copies stay 1:1).
 //   v0.7.0 (2026-11-26) — new posts show the check: «✓ проверено GPT» / «✎ исправлено GPT» + note,
 //                         and what the script still finds.
+//   v0.7.1 (2026-11-26) — copies show their proofreading: «✓ / ✎ корректура GPT» + what was fixed.
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -711,7 +712,7 @@ function ItemCard({
         {plan.settings.mode === 'mix' && (
           <span className="rounded-full bg-gray-900 px-2 py-0.5 text-white">{isCopy ? 'копия' : 'новый'}</span>
         )}
-        {it.review && !isCopy && (
+        {it.review && (
           <span
             className={`rounded-full px-2 py-0.5 ${
               it.review.verdict === 'ok'
@@ -722,7 +723,17 @@ function ItemCard({
             }`}
             title={it.review.note ?? ''}
           >
-            {it.review.verdict === 'ok' ? '✓ проверено GPT' : it.review.verdict === 'fixed' ? '✎ исправлено GPT' : 'не проверено'}
+            {isCopy
+              ? it.review.verdict === 'ok'
+                ? '✓ корректура GPT'
+                : it.review.verdict === 'fixed'
+                  ? '✎ корректура GPT'
+                  : 'без корректуры'
+              : it.review.verdict === 'ok'
+                ? '✓ проверено GPT'
+                : it.review.verdict === 'fixed'
+                  ? '✎ исправлено GPT'
+                  : 'не проверено'}
           </span>
         )}
         {it.rubric && <span className="rounded-full border border-edge px-2 py-0.5 text-muted">{it.rubric}</span>}
@@ -743,7 +754,7 @@ function ItemCard({
         )}
       </div>
       {it.title && <p className="mb-2 font-semibold leading-snug">{it.title}</p>}
-      {it.review && !isCopy && (it.review.note || it.review.left?.length) && (
+      {it.review && (it.review.note || it.review.left?.length) && (
         <p className="mb-2 text-xs leading-snug text-muted">
           {it.review.note}
           {it.review.left?.length ? <span className="block text-amber-700">Осталось: {it.review.left.join('; ')}</span> : null}

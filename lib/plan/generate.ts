@@ -33,6 +33,7 @@
 //                         cut answers off); if it still runs out — the batch again without thinking.
 //                         Shorter slides: cover 5–8 words (≤ 10; a «send this to…» task hook ≤ 12),
 //                         a question ≤ 16 words (answer options on their own lines).
+//   v0.5.3 (2026-11-26) — the winning task hook keeps its key words verbatim; only the ending varies.
 
 import { thinkingOff } from '@/lib/anthropic';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -384,7 +385,7 @@ ${s.brief || '(no source dossiers)'}`;
   // shared part of every batch first (cached by the API), then what changes per batch
   const shared = `Context: I run a question-card app for couples and post carousels with conversation questions for partners. Flirty, playful and a bit spicy is the genre and is fine; keep everything non-explicit (no sexual acts or body details spelled out) so the posts stay Instagram-safe.
 
-You write Instagram carousel posts for my accounts about questions for couples. Each carousel = a cover slide with a hook + one question per slide + a last slide that asks for a comment or a follow (the last slide is given, do not write it). The background photos already exist; your texts are overlaid on them, so keep every slide SHORT: the cover hook 5–8 words, never more than 10 (a «task» hook like «Send this to your boyfriend, he has to answer one» may take up to 12); a question at most 16 words, answer options, if you use them, on separate short lines like «A) …».
+You write Instagram carousel posts for my accounts about questions for couples. Each carousel = a cover slide with a hook + one question per slide + a last slide that asks for a comment or a follow (the last slide is given, do not write it). The background photos already exist; your texts are overlaid on them, so keep every slide SHORT: the cover hook 5–8 words, never more than 10 (a «task» hook like «Send this to your boyfriend, he has to answer one» may take up to 12); a question at most 16 words, answer options, if you use them, on separate short lines like «A) …». When you use the winning «task» hook, keep its key words verbatim — «Send this to your boyfriend» (or girlfriend / partner; never «your man» or «send him this») and «he has to answer one» — and vary only a short ending («…no excuses», «…honestly»).
 
 Write in ${s.language}. Make the hooks and questions as catchy as the strongest examples: same kinds of hooks, same kinds of questions, same tone — but your own words; never copy a cover or a question, not even reworded closely. No emojis on the cover and questions, no numbering inside the questions.
 

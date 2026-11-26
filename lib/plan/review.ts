@@ -4,6 +4,9 @@
 //                  repeats inside the plan, near-copies of competitor covers / questions
 //   reviewItems()  a second model (GPT, not Claude — other blind spots) reads each new carousel with
 //                  the playbook and either approves it or returns a fixed version + a note in Russian
+//   proofreadCopies()  copies (competitor slide texts 1:1) get a proofreading only: OCR typos, words
+//                  cut at the image edge (from the caption / the same hook on their other carousels),
+//                  a missing full stop between two sentences — wording never changes
 //
 // Limits (from the 199 strongest carousels of @21questions.couples): cover 5–8 words, at most 10;
 // a «task» hook («Send this to your boyfriend, they have to answer one…») at most 12; a question
@@ -11,6 +14,9 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-26) — initial.
+//   v0.2.0 (2026-11-26) — proofreadCopies(); the winning task hook keeps its key words verbatim
+//                         («Send this to your boyfriend … has to answer one»), checked by the script
+//                         and by the reviewer; only the ending may vary.
 
 import { normSlide } from './copy';
 import type { PlanExample, PlanReview, PlanSettings } from './types';
@@ -60,11 +66,22 @@ export function competitorLines(examples: PlanExample[] | undefined): string[] {
   return out;
 }
 
+/** A «send this to…» task hook that lost the key words of the winning template. */
+function brokenTaskHook(cover: string): string | null {
+  if (!/\bsend (this|him|her|it)\b/i.test(cover)) return null;
+  const to = /\bsend this to your (boyfriend|girlfriend|partner|bf|gf)\b/i.test(cover);
+  const answer = /\b(has|have) to answer one\b/i.test(cover);
+  if (to && answer) return null;
+  return 'хук-задание без ключевых слов шаблона («Send this to your boyfriend… has to answer one»)';
+}
+
 /** Problems a program can see. Empty = passes. */
 export function codeIssues(d: Draft, questions: number, used: Set<string>, competitors: string[]): string[] {
   const issues: string[] = [];
   const coverMax = isTaskHook(d.cover) ? COVER_TASK_MAX : COVER_MAX;
   if (words(d.cover) > coverMax) issues.push(`обложка ${words(d.cover)} слов, нужно не больше ${coverMax}`);
+  const hook = brokenTaskHook(d.cover);
+  if (hook) issues.push(hook);
   if (d.questions.length !== questions) issues.push(`вопросов ${d.questions.length}, нужно ${questions}`);
   d.questions.forEach((q, i) => {
     const n = words(questionPart(q));
@@ -124,6 +141,7 @@ What wins at the competitors (the writer's playbook, in Russian):
 ${(s.playbook || s.brief || '(none)').slice(0, 6000)}
 
 RULES
+- a «task» hook keeps the key words of the winning template verbatim: «Send this to your boyfriend» (or girlfriend / partner, never «your man» / «send him this») and «he has to answer one» (or «they have to answer one»); only a short ending may vary («…no excuses», «…honestly»)
 - cover (slide 1) = the hook: 5–8 words is best, at most ${COVER_MAX}; a «task» hook like «Send this to your boyfriend, he has to answer one» at most ${COVER_TASK_MAX}. It must make someone stop scrolling, as strong as the playbook's best hooks
 - each question: at most ${QUESTION_MAX} words (answer options on their own short lines «A) …» do not count); clear at first read, specific, makes people want to answer or send it to their partner; no dull or generic questions
 - exactly the number of questions asked; all different
@@ -183,4 +201,115 @@ Answer with ONLY this JSON (one entry per key). For «ok» give only key and ver
   } catch (e) {
     return skip(`не проверено: ${e instanceof Error ? e.message : String(e)}`.slice(0, 160));
   }
+}
+
+// --- copies: proofreading only -------------------------------------------------------------------
+
+export interface CopyDraft {
+  key: string;
+  slides: string[]; // without our CTA
+  caption: string; // the competitor's caption (context for cut words)
+  siblings: string[]; // the same hook on their other carousels (context)
+}
+
+const wordSet = (t: string) => new Set(normSlide(t).split(' ').filter(Boolean));
+
+/** A proofread slide is accepted only if it is still the same text (most words kept, not much longer). */
+function sameText(before: string, after: string): boolean {
+  const a = wordSet(before);
+  const b = wordSet(after);
+  if (!a.size) return false;
+  let kept = 0;
+  for (const w of a) if (b.has(w)) kept++;
+  return kept / a.size >= 0.6 && b.size <= a.size + 6;
+}
+
+async function openai(prompt: string): Promise<string> {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) throw new Error('нет OPENAI_API_KEY');
+  let res: Response | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: REVIEW_MODEL, messages: [{ role: 'user', content: prompt }] }),
+      cache: 'no-store',
+    });
+    if (res.status !== 429 && res.status < 500) break;
+    await new Promise((r) => setTimeout(r, 2000 * attempt));
+  }
+  if (!res?.ok) throw new Error(`OpenAI HTTP ${res?.status}: ${(await res?.text())?.slice(0, 120)}`);
+  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+  return data.choices?.[0]?.message?.content ?? '';
+}
+
+/** Proofreads copied carousels. Never throws; every key gets a review (ok / fixed / skipped). */
+export async function proofreadCopies(
+  copies: CopyDraft[]
+): Promise<Map<string, { slides: string[]; review: PlanReview }>> {
+  const out = new Map<string, { slides: string[]; review: PlanReview }>();
+  const skip = (why: string) => {
+    for (const c of copies) out.set(c.key, { slides: c.slides, review: { by: REVIEW_MODEL, verdict: 'skipped', note: why, issues: [] } });
+    return out;
+  };
+  if (!copies.length) return out;
+  const prompt = `These are slide texts of Instagram carousels, read by OCR from the images of a competitor account (questions for couples). We repost the texts 1:1, so you are a PROOFREADER, not an editor.
+
+Fix ONLY:
+- OCR mistakes: garbled or misspelled words («QUESHUR» → «QUESTION»)
+- words cut off at the image edge or hidden behind something: complete them only when the caption or the same hook on their other carousels (given below) shows what the full words are
+- two sentences glued without punctuation: add the full stop («…YOUR BOYFRIEND THEY HAVE…» → «…YOUR BOYFRIEND. THEY HAVE…»)
+NEVER change the wording, order, tone, slang or letter case, never shorten, never improve. If a slide has no such mistakes, leave it exactly as it is. Keep line breaks. Keep the number of slides.
+
+${copies
+  .map(
+    (c) => `### key=${c.key}
+caption of the original post: ${c.caption.replace(/\s+/g, ' ').slice(0, 300) || '—'}
+${c.siblings.length ? `the same hook on their other carousels: ${c.siblings.map((x) => `«${x}»`).join(' · ')}\n` : ''}${c.slides.map((t, i) => `slide ${i + 1}: ${t.replace(/\n/g, ' / ')}`).join('\n')}`
+  )
+  .join('\n\n')}
+
+Answer with ONLY this JSON, one entry per key. «ok» = nothing to fix. For «fixed» give ALL slides (unchanged ones as they were; a line break as « / ») and a short note in Russian listing what you fixed. Inside text values never use the " character.
+{"items":[{"key":"...","verdict":"ok"},{"key":"...","verdict":"fixed","note":"...","slides":["...","..."]}]}`;
+  let answer = '';
+  try {
+    answer = await openai(prompt);
+  } catch (e) {
+    return skip(`не проверено: ${e instanceof Error ? e.message : String(e)}`.slice(0, 160));
+  }
+  let items: { key?: string; verdict?: string; note?: string; slides?: string[] }[] = [];
+  try {
+    const a = answer.indexOf('{');
+    const b = answer.lastIndexOf('}');
+    items = (JSON.parse(answer.slice(a, b + 1)) as { items?: typeof items }).items ?? [];
+  } catch {
+    return skip('не проверено: ответ не разобран');
+  }
+  const byKey = new Map(items.filter((x) => x?.key).map((x) => [String(x.key), x]));
+  for (const c of copies) {
+    const a = byKey.get(c.key);
+    if (!a) {
+      out.set(c.key, { slides: c.slides, review: { by: REVIEW_MODEL, verdict: 'skipped', note: 'не проверено: корректор не ответил', issues: [] } });
+      continue;
+    }
+    if (a.verdict !== 'fixed' || !Array.isArray(a.slides) || a.slides.length !== c.slides.length) {
+      out.set(c.key, { slides: c.slides, review: { by: REVIEW_MODEL, verdict: 'ok', issues: [] } });
+      continue;
+    }
+    // take a fixed slide only if it is still the same text; line breaks come back as « / »
+    let changed = 0;
+    const slides = c.slides.map((before, i) => {
+      const after = String(a.slides![i] ?? '').replace(/\s+\/\s+/g, '\n').trim();
+      if (!after || after === before || !sameText(before, after)) return before;
+      changed++;
+      return after;
+    });
+    out.set(c.key, {
+      slides,
+      review: changed
+        ? { by: REVIEW_MODEL, verdict: 'fixed', note: (a.note ?? '').trim(), issues: [] }
+        : { by: REVIEW_MODEL, verdict: 'ok', issues: [] },
+    });
+  }
+  return out;
 }
