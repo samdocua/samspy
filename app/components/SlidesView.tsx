@@ -58,6 +58,7 @@
 //                         «Сбросить» → «Сбросить настройки».
 //   v1.0.3 (2026-11-20) — settings export / import removed (not needed).
 //   v1.1.0 (2026-11-22) — carousels from «План»: «Скачать все» marks the plan item done.
+//   v1.1.1 (2026-11-26) — imported texts: line wraps of the original layout glued (joinSoftBreaks).
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -83,6 +84,7 @@ import { canvasToBlob, compressImage, renderSlide, type TextOptions } from '@/li
 import { pickSaveTarget, stamp } from '@/lib/slides/save';
 import { zipSync } from 'fflate';
 import type { SlidesImport } from '@/lib/carousels/toSlides';
+import { joinSoftBreaks } from '@/lib/carousels/postprocess';
 import { placementIssues, textIssues, type CheckIssue } from '@/lib/slides/checkLocal';
 import {
   canPickDirectory,
@@ -478,7 +480,8 @@ export default function SlidesView({
   // --- texts from «Карусели» ----------------------------------------------------
   const applyImport = useCallback(
     (imp: SlidesImport, mode: 'replace' | 'append') => {
-      const fresh = imp.texts.map((text) => ({ ...newSlide(), text }));
+      // line wraps of the original layout are glued (quiz options / sentence ends stay on their own lines)
+      const fresh = imp.texts.map((text) => ({ ...newSlide(), text: joinSoftBreaks(text) }));
       if (!fresh.length) {
         flash('В этой карусели нет текстов для слайдов.');
         return;

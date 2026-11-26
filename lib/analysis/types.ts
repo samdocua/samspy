@@ -13,9 +13,12 @@
 //   v0.5.1 (2026-11-23) — CardSummary.period: dates the card numbers cover.
 //   v0.5.2 (2026-11-23) — CardSummary.median_kind: card median follows the main format.
 //   v0.5.3 (2026-11-24) — FetchState.ai_fails: AI step failures in a row.
+//   v0.6.0 (2026-11-26) — status 'slides' + FetchState.slides: slide texts of a finished dossier
+//                         (all slides of the top 200 carousels, covers of the rest), then re-tag.
 
 export type AnalysisStatus =
   | 'confirm'
+  | 'slides'
   | 'apify'
   | 'save'
   | 'thumbs'
@@ -58,6 +61,12 @@ export interface FetchState {
   limit?: number;
   /** AI step failures in a row (step → count); a step is retried before it is skipped */
   ai_fails?: Record<string, number>;
+  /** «Распознать слайды» on a finished dossier */
+  slides?: {
+    failed: number; // carousels whose images did not load (links expired)
+    read: number; // carousels read in this run
+    refresh?: { cursor?: string | null; pages: number; done?: boolean }; // fresh links from the feed
+  };
   done?: boolean;
   /** failed rounds of the current feed request in a row */
   fails: number;

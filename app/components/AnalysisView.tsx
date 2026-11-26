@@ -31,6 +31,8 @@
 //   v0.4.4 (2026-11-23) — posts per day instead of per week (card + dossier); card median says
 //                         what it is: «медиана просмотров» (reels) / «медиана лайков» (carousels).
 //   v0.4.5 (2026-11-23) — a failed list load says so instead of «нет ни одного досье».
+//   v0.5.0 (2026-11-26) — dossier: «Распознать слайды» (all slides of the top 200 carousels, covers
+//                         of the rest, then rubrics and the dossier are redone from the slide texts).
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -46,7 +48,7 @@ import type {
 } from '@/lib/analysis/types';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const ACTIVE = ['apify', 'save', 'thumbs', 'stats', 'comments', 'texts', 'tag', 'breakdown', 'synth'];
+const ACTIVE = ['slides', 'apify', 'save', 'thumbs', 'stats', 'comments', 'texts', 'tag', 'breakdown', 'synth'];
 const isActive = (s?: string | null) => !!s && ACTIVE.includes(s);
 
 // --- formatting -----------------------------------------------------------------------
@@ -226,6 +228,7 @@ export default function AnalysisView() {
         card={card}
         onBack={() => setOpenUser(null)}
         onRefresh={(mode) => void create(openUser, mode)}
+        onCard={upsertCard}
       />
     );
   }
@@ -519,11 +522,13 @@ function DossierView({
   card,
   onBack,
   onRefresh,
+  onCard,
 }: {
   username: string;
   card: AccountCard | null;
   onBack: () => void;
   onRefresh: (mode: 'update' | 'full') => void;
+  onCard?: (c: AccountCard) => void;
 }) {
   const [dossier, setDossier] = useState<Dossier | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -547,6 +552,30 @@ function DossierView({
   }, [username, lastJob, progress]);
 
   const running = isActive(card?.job?.status);
+
+  async function readSlides(carousels: number) {
+    const top = Math.min(200, carousels);
+    // rough: cover ≈ $0.0015, a whole carousel ≈ $0.01, re-tagging ≈ $0.0006 a post
+    const usd = (carousels - top) * 0.0015 + top * 0.01 + carousels * 0.0006;
+    const hours = Math.max(0.2, carousels / 3000);
+    if (
+      !confirm(
+        `Распознать слайды @${username}: все слайды у ${top} лучших каруселей и обложки у остальных ${(carousels - top).toLocaleString('ru-RU')}. ` +
+          `Потом рубрики, хуки и досье пересоберутся по текстам слайдов.\n\n` +
+          `Примерно $${usd.toFixed(usd < 10 ? 1 : 0)} (оценка) и ${hours < 1 ? 'до часа' : `~${Math.round(hours)} ч`}, идёт в фоне. ` +
+          `Если ссылки на картинки устарели, лента перечитается заново (до ~${Math.ceil(carousels / 12)} кредитов ScrapeCreators).`
+      )
+    )
+      return;
+    const res = await fetch(`/api/analysis/${username}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'slides' }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) setError(data.error ?? `HTTP ${res.status}`);
+    else if (data.card) onCard?.(data.card);
+  }
 
   return (
     <div className="space-y-6">
@@ -576,6 +605,15 @@ function DossierView({
               >
                 Пересобрать за год
               </button>
+              {dossier && dossier.stats.carousels.count > 0 && (
+                <button
+                  onClick={() => void readSlides(dossier.stats.carousels.count)}
+                  title="Распознать тексты слайдов: все слайды у 200 лучших каруселей, обложки у остальных; потом рубрики и досье пересоберутся по этим текстам"
+                  className="text-muted hover:text-gray-900"
+                >
+                  Распознать слайды
+                </button>
+              )}
             </span>
           )}
         </span>

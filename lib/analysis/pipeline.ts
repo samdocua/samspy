@@ -54,6 +54,10 @@
 //                         (the tab showed «нет досье» on a timeout).
 //   v0.5.4 (2026-11-24) — a failed AI step is retried on the next call (up to 5 in a row) instead
 //                         of being skipped at once: one timeout ended a 10 000-post tagging run.
+//   v0.6.0 (2026-11-26) — «Распознать слайды» (startSlidesOcr / status 'slides'): all slides of the
+//                         top 200 carousels + covers of the rest; expired image links are refreshed
+//                         from the feed (ScrapeCreators); then every post is re-tagged with the slide
+//                         texts (fresh rubric vocabulary) and the dossier is rewritten.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -145,7 +149,7 @@ const AI_FIELDS = ['title_ru', 'rubric', 'hook', 'format', 'breadth', 'first_lin
 
 const nowIso = () => new Date().toISOString();
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
-const ACTIVE: AnalysisStatus[] = ['apify', 'save', 'thumbs', 'stats', 'comments', 'texts', 'tag', 'breakdown', 'synth'];
+const ACTIVE: AnalysisStatus[] = ['slides', 'apify', 'save', 'thumbs', 'stats', 'comments', 'texts', 'tag', 'breakdown', 'synth'];
 
 function publicUrl(sb: SupabaseClient, path: string | null, v?: string): string | null {
   if (!path) return null;
@@ -293,7 +297,8 @@ export async function stepAnalysis(sb: SupabaseClient, jobId: string): Promise<b
     while (Date.now() < deadline && ACTIVE.includes(status)) {
       let next: AnalysisStatus = status;
       try {
-        if (status === 'apify') next = job.scrape ? await stepFetch(sb, job, deadline) : await stepApify(sb, job);
+        if (status === 'slides') next = await stepSlides(sb, job, deadline);
+        else if (status === 'apify') next = job.scrape ? await stepFetch(sb, job, deadline) : await stepApify(sb, job);
         else if (status === 'save') next = await stepSave(sb, job);
         else if (status === 'thumbs') next = (await stepThumbs(sb, job)) ? 'thumbs' : 'stats';
         else if (status === 'stats') next = await stepStats(sb, job);
@@ -453,6 +458,170 @@ export async function cancelCollection(sb: SupabaseClient, jobId: string) {
   const { data: job } = await sb.from('analysis_jobs').select('status').eq('id', jobId).maybeSingle();
   if (job?.status !== 'confirm') return;
   await setJob(sb, jobId, { status: 'failed', error: 'Сбор отменён.' });
+}
+
+// --- «Распознать слайды» ------------------------------------------------------------------------
+
+const SLIDES_TOP = 200; // carousels whose every slide is read (by likes = by ratio)
+const SLIDES_TOP_CONCURRENCY = 4;
+const SLIDES_COVER_BATCH = 40;
+const SLIDES_COVER_CONCURRENCY = 8;
+const SLIDES_REFRESH_AFTER = 10; // failed image loads before the feed is re-read for fresh links
+
+/** OCR text that covers more than the cover («--- 1 ---» and «--- 2 ---» at least). */
+const ocrCoversSlides = (ocr: string | null, slides: number | null) =>
+  !!ocr && (ocr.match(/^\s*-{2,}\s*\d+\s*-{2,}\s*$/gm) ?? []).length >= Math.min(2, slides ?? 2);
+
+type SlidePost = Pick<AnalysisPost, 'id' | 'shortcode' | 'slides' | 'display_url' | 'slide_urls' | 'ocr_text'>;
+
+/** Starts «Распознать слайды» on the account's finished dossier. */
+export async function startSlidesOcr(sb: SupabaseClient, username: string) {
+  const { data: acc } = await sb.from('analysis_accounts').select('last_job_id').eq('username', username).maybeSingle();
+  if (!acc?.last_job_id) throw new Error('Досье ещё не готово.');
+  const { data: busy } = await sb
+    .from('analysis_jobs')
+    .select('id')
+    .eq('username', username)
+    .in('status', [...ACTIVE, 'confirm'])
+    .limit(1);
+  if (busy?.length) throw new Error('По аккаунту уже идёт работа — дождись её конца.');
+  const { data: job } = await sb.from('analysis_jobs').select(JOB_COLS).eq('id', acc.last_job_id).maybeSingle<AnalysisJob>();
+  if (!job) throw new Error('Досье не найдено.');
+  const scrape: FetchState = {
+    ...(job.scrape ?? { provider: 'sc', since: job.period_from, pages: 0, posts: 0, fails: 0, done: true }),
+    slides: { failed: 0, read: 0 },
+    ai_fails: {},
+  };
+  await setJob(sb, job.id, { status: 'slides', error: null, ai_error: null, locked_until: null, scrape });
+}
+
+async function readSlides(sb: SupabaseClient, job: AnalysisJob, p: SlidePost, urls: string[]): Promise<boolean> {
+  const st = job.scrape!.slides!;
+  try {
+    if (!urls.length) throw new Error('нет ссылок');
+    const ocr = await ocrCarousel(urls);
+    await sb.from('analysis_posts').update({ ocr_text: ocr, text_done: true }).eq('id', p.id);
+    st.read += 1;
+    return true;
+  } catch {
+    // '' = tried; a feed refresh turns it back to null for another try
+    await sb.from('analysis_posts').update({ ocr_text: '' }).eq('id', p.id);
+    st.failed += 1;
+    return false;
+  }
+}
+
+/** Fresh image links from the account's feed for posts of this job (12 posts a credit). */
+async function refreshLinks(sb: SupabaseClient, job: AnalysisJob, deadline: number) {
+  const st = job.scrape!.slides!;
+  const r = (st.refresh ??= { pages: 0 });
+  const sinceMs = new Date(job.period_from).getTime();
+  while (!r.done && Date.now() < deadline - 8_000) {
+    const page = await scPostsPage(job.username, r.cursor, { until: deadline - 3_000 });
+    r.pages += 1;
+    r.cursor = page.next;
+    for (const it of page.items) {
+      if (!it.shortCode) continue;
+      const slide_urls = (it.childPosts?.map((c) => c.displayUrl).filter((u): u is string => !!u) ?? []).slice(0, 20);
+      await sb
+        .from('analysis_posts')
+        .update({ display_url: it.displayUrl ?? null, ...(slide_urls.length ? { slide_urls } : {}) })
+        .eq('job_id', job.id)
+        .eq('shortcode', it.shortCode);
+    }
+    const last = page.items[page.items.length - 1];
+    const past = !!last?.timestamp && new Date(last.timestamp).getTime() < sinceMs && !last.isPinned;
+    if (!page.next || !page.items.length || past) r.done = true;
+    await setJob(sb, job.id, { scrape: job.scrape });
+  }
+  if (r.done) {
+    // failed ones get another try with the fresh links
+    await sb.from('analysis_posts').update({ ocr_text: null }).eq('job_id', job.id).eq('ocr_text', '');
+    st.failed = 0;
+    await setJob(sb, job.id, { scrape: job.scrape });
+  }
+}
+
+/** One step of «Распознать слайды». 'slides' while there is work, then 'tag' (re-tag everything). */
+async function stepSlides(sb: SupabaseClient, job: AnalysisJob, deadline: number): Promise<AnalysisStatus> {
+  if (!job.scrape) job.scrape = { provider: 'sc', since: job.period_from, pages: 0, posts: 0, fails: 0, done: true };
+  const st = (job.scrape.slides ??= { failed: 0, read: 0 });
+  const from = new Date(job.period_from).toISOString();
+
+  // links expired → re-read the feed once for fresh ones
+  if (st.failed >= SLIDES_REFRESH_AFTER && st.failed > st.read && !st.refresh?.done && scEnabled()) {
+    await refreshLinks(sb, job, deadline);
+    return 'slides';
+  }
+
+  // 1) every slide of the best carousels
+  const { data: top } = await sb
+    .from('analysis_posts')
+    .select('id,shortcode,slides,display_url,slide_urls,ocr_text')
+    .eq('job_id', job.id)
+    .eq('kind', 'carousel')
+    .gte('posted_at', from)
+    .not('likes', 'is', null)
+    .order('likes', { ascending: false })
+    .limit(SLIDES_TOP)
+    .returns<SlidePost[]>();
+  const full = (top ?? []).filter((p) => p.ocr_text !== '' && !ocrCoversSlides(p.ocr_text, p.slides));
+  if (full.length) {
+    let next = 0;
+    const worker = async () => {
+      while (next < full.length && Date.now() < deadline - 20_000) {
+        const p = full[next++];
+        await readSlides(sb, job, p, p.slide_urls?.length ? p.slide_urls : p.display_url ? [p.display_url] : []);
+      }
+    };
+    await Promise.all(Array.from({ length: SLIDES_TOP_CONCURRENCY }, worker));
+    await setJob(sb, job.id, { scrape: job.scrape });
+    return 'slides';
+  }
+
+  // 2) covers of the rest
+  const { data: rest } = await sb
+    .from('analysis_posts')
+    .select('id,shortcode,slides,display_url,slide_urls,ocr_text')
+    .eq('job_id', job.id)
+    .eq('kind', 'carousel')
+    .gte('posted_at', from)
+    .is('ocr_text', null)
+    .limit(SLIDES_COVER_BATCH)
+    .returns<SlidePost[]>();
+  if (rest?.length) {
+    let next = 0;
+    const worker = async () => {
+      while (next < rest.length && Date.now() < deadline - 10_000) {
+        const p = rest[next++];
+        await readSlides(sb, job, p, p.display_url ? [p.display_url] : p.slide_urls?.slice(0, 1) ?? []);
+      }
+    };
+    await Promise.all(Array.from({ length: SLIDES_COVER_CONCURRENCY }, worker));
+    await setJob(sb, job.id, { scrape: job.scrape });
+    return 'slides';
+  }
+
+  // 3) done: tag everything again with the slide texts (fresh rubric vocabulary), then the dossier
+  const { count: unread } = await sb
+    .from('analysis_posts')
+    .select('id', { count: 'exact', head: true })
+    .eq('job_id', job.id)
+    .eq('kind', 'carousel')
+    .eq('ocr_text', '');
+  if (unread) {
+    const msg = `слайды: ${unread} каруселей не распознались (картинки не загрузились)`;
+    job.ai_error = job.ai_error ? `${job.ai_error} · ${msg}` : msg;
+  }
+  for (;;) {
+    // in parts: one update of 10 000 rows can hit the statement timeout
+    const { data: ids } = await sb.from('analysis_posts').select('id').eq('job_id', job.id).eq('tagged', true).limit(1000);
+    if (!ids?.length) break;
+    await sb.from('analysis_posts').update({ tagged: false }).in('id', ids.map((r) => r.id));
+  }
+  job.ai_meta = null;
+  await setJob(sb, job.id, { ai_meta: null, ai_error: job.ai_error, scrape: job.scrape });
+  return 'tag';
 }
 
 async function stepApify(sb: SupabaseClient, job: AnalysisJob): Promise<AnalysisStatus> {
@@ -996,7 +1165,8 @@ async function stepTag(sb: SupabaseClient, job: AnalysisJob, deadline: number): 
   if (!job.ai_meta) {
     // a quick update keeps the rubrics of the previous dossier, so tags stay comparable
     let vocab = null;
-    if (job.base_job_id) {
+    // (after «Распознать слайды» the vocabulary is found anew — from the slide texts)
+    if (job.base_job_id && !job.scrape?.slides) {
       const { data } = await sb.from('analysis_jobs').select('ai_meta').eq('id', job.base_job_id).maybeSingle();
       vocab = data?.ai_meta ?? null;
     }
@@ -1183,6 +1353,17 @@ async function progressOf(sb: SupabaseClient, job: AnalysisJob): Promise<string 
     return f.profile ? `Собираю ${what}: ${f.posts}${retry}` : `Собираю профиль…${retry}`;
   }
   if (job.status === 'save') return 'Сохраняю посты…';
+  if (job.status === 'slides') {
+    const st = job.scrape?.slides;
+    const { count: left } = await sb
+      .from('analysis_posts')
+      .select('id', { count: 'exact', head: true })
+      .eq('job_id', job.id)
+      .eq('kind', 'carousel')
+      .is('ocr_text', null);
+    if (st?.refresh && !st.refresh.done) return `Распознаю слайды: обновляю ссылки на картинки (${st.refresh.pages} стр.)…`;
+    return `Распознаю слайды: прочитано ${(st?.read ?? 0).toLocaleString('ru-RU')}, осталось обложек ${(left ?? 0).toLocaleString('ru-RU')}…`;
+  }
   if (job.status === 'stats') return 'Считаю цифры…';
   if (job.status === 'comments') {
     const c = job.scrape?.comments;
