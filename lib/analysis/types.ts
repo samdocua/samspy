@@ -16,6 +16,7 @@
 //   v0.6.0 (2026-11-26) — status 'slides' + FetchState.slides: slide texts of a finished dossier
 //                         (all slides of the top 200 carousels, covers of the rest), then re-tag.
 //   v0.6.2 (2026-11-26) — FetchState.tag_skipped.
+//   v0.6.3 (2026-11-26) — slides.tried.
 
 export type AnalysisStatus =
   | 'confirm'
@@ -69,6 +70,7 @@ export interface FetchState {
   slides?: {
     failed: number; // carousels whose images did not load (links expired)
     read: number; // carousels read in this run
+    tried?: string[]; // strongest carousels already read in full this run (never read twice)
     refresh?: { cursor?: string | null; pages: number; done?: boolean }; // fresh links from the feed
     top?: string[]; // ids of the strongest carousels (read in full), picked once per run
   };
