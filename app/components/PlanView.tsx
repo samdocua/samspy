@@ -16,6 +16,7 @@
 //                         slides alternate with the keyword ones (own list in the form); the
 //                         card shows the CTA kind and a link to the copied original; copy mode
 //                         «↻ Другой пост».
+//   v0.3.1 (2026-11-26) — neutral CTA wording (send / save / tag / follow), badge «нейтральный».
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -372,7 +373,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
       <label className="block">
         <span className={labelCls}>
           Последний слайд, тип 1 — призыв написать СЛОВО в комментариях (заглавными), по одному тексту на строку.
-          Посты чередуются: один с таким призывом, следующий с призывом подписаться (ниже)
+          Посты чередуются: один с таким призывом, следующий с нейтральным (ниже)
         </span>
         <textarea value={ctas} onChange={(e) => setCtas(e.target.value)} rows={6} className={`${inputCls} h-auto py-2`} />
         {ctas
@@ -385,7 +386,7 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           ))}
       </label>
       <label className="block">
-        <span className={labelCls}>Последний слайд, тип 2 — нейтральный призыв подписаться, по одному тексту на строку</span>
+        <span className={labelCls}>Последний слайд, тип 2 — нейтральный призыв без слова (отправить, сохранить, отметить, подписаться), по одному на строку</span>
         <textarea value={follows} onChange={(e) => setFollows(e.target.value)} rows={5} className={`${inputCls} h-auto py-2`} />
       </label>
       {mode === 'write' && (
@@ -630,7 +631,7 @@ function ItemCard({
   }
 
   const ctaText = ctaTextOf(plan.settings, it);
-  const ctaLabel = it.cta_kind === 'follow' ? 'подписка' : keywordOf(ctaText) ?? 'призыв';
+  const ctaLabel = it.cta_kind === 'follow' ? 'нейтральный' : keywordOf(ctaText) ?? 'призыв';
   const lastIsCta = it.slides[it.slides.length - 1] === ctaText;
 
   return (

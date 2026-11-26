@@ -12,6 +12,8 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-26) — initial.
+//   v0.1.1 (2026-11-26) — a dossier OCR of the cover only (older fallback) is redone from all
+//                         slides; before, such carousels were skipped (a whole source dropped out).
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { cleanCarouselSlides, ocrCarousel } from '@/lib/analysis/ai';
@@ -113,13 +115,16 @@ export function slidesFromOcr(ocr: string): string[] {
 export async function textsOf(sb: SupabaseClient, src: CopySource): Promise<{ slides: string[]; title: string | null } | null> {
   const { data: post } = await sb
     .from('analysis_posts')
-    .select('id,url,ocr_text,slide_urls,title_ru')
+    .select('id,url,ocr_text,slide_urls,title_ru,slides')
     .eq('job_id', src.job_id)
     .eq('shortcode', src.shortcode)
-    .maybeSingle<Pick<AnalysisPost, 'id' | 'url' | 'ocr_text' | 'slide_urls' | 'title_ru'>>();
+    .maybeSingle<Pick<AnalysisPost, 'id' | 'url' | 'ocr_text' | 'slide_urls' | 'title_ru' | 'slides'>>();
   if (!post) return null;
 
-  let ocr = post.ocr_text && post.ocr_text.trim().length > 20 ? post.ocr_text : null;
+  // the dossier OCR counts only if it covers the slides (an older fallback read the cover only)
+  const ocrSlides = (post.ocr_text?.match(/^\s*-{2,}\s*\d+\s*-{2,}\s*$/gm) ?? []).length;
+  const covers = ocrSlides >= Math.min(2, post.slides ?? 2);
+  let ocr = post.ocr_text && post.ocr_text.trim().length > 20 && covers ? post.ocr_text : null;
   if (!ocr) {
     let urls = post.slide_urls ?? [];
     try {
