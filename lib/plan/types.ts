@@ -9,6 +9,10 @@
 //                         'comment' (keyword) / 'follow' (follow for more) — DEFAULT_FOLLOW_CTAS;
 //                         follow posts get a comment-bait caption (CAPTION_BAITS).
 //   v0.3.1 (2026-11-26) — neutral last slides vary: send / save / tag / follow / try.
+//   v0.4.0 (2026-11-26) — mode 'mix': half copies, half new (item.mode per post).
+//   v0.5.0 (2026-11-26) — the writer learns from up to 200 strongest carousels per source:
+//                         settings.playbook (Claude's notes) + settings.examples; mix plans go
+//                         copy, new, copy, new… (the CTA kind changes every two posts there).
 
 /** Last slides that ask to comment a keyword. Universal (fit any post). Rotated. */
 export const DEFAULT_CTAS = [
@@ -49,8 +53,20 @@ export function keywordOf(cta: string): string | null {
 
 export type PlanStatus = 'generating' | 'done' | 'failed';
 export type ItemStatus = 'draft' | 'in_slides' | 'done';
-export type PlanMode = 'write' | 'copy';
+export type PlanMode = 'write' | 'copy' | 'mix';
+export type ItemMode = 'write' | 'copy';
 export type CtaKind = 'comment' | 'follow';
+
+/** A competitor carousel the writer learns from (slides read in full). */
+export interface PlanExample {
+  src: string; // source account
+  strength: number; // likes / median of ±15 days
+  likes: number;
+  rubric: string | null;
+  hook: string | null;
+  slides: string; // «1) cover\n2) …», clipped
+  caption: string;
+}
 
 /** A competitor carousel waiting to be copied (mode 'copy'). */
 export interface CopySource {
@@ -69,7 +85,10 @@ export interface PlanSettings {
   cta_variants: string[]; // last slides with a comment keyword, rotated
   follow_variants?: string[]; // last slides «follow for more», rotated (alternate with the above)
   notes: string; // free wishes for the writer
-  brief: string; // snapshot of the source dossiers (mode 'write')
+  brief: string; // older snapshot of the source dossiers (fallback when few slides are read)
+  playbook?: string; // what wins at the sources — Claude's notes over their strongest carousels
+  examples?: PlanExample[]; // those carousels (server only; the writer rotates through them)
+  learned?: Record<string, number>; // source → carousels learned from (slides read in full)
   combos: { rubric: string; hook: string; weight: number }[]; // what wins at the sources
   copy_pool?: CopySource[]; // mode 'copy': winners not used yet, best first
 }
@@ -100,6 +119,7 @@ export interface PlanItem {
   hook: string | null;
   title: string | null;
   slides: string[];
+  mode: ItemMode | null; // mix plans: how this post is made; null = the plan's mode
   cta_kind: CtaKind | null; // older items: null = 'comment'
   cta_variant: number | null; // index in the list of its kind
   caption: string | null;

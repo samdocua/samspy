@@ -19,10 +19,25 @@
 //   v0.3.0 (2026-11-26) — mode 'copy' (slide texts 1:1 from winning carousels, source link on
 //                         the item, near-duplicates skipped); CTA kinds 'comment' / 'follow'
 //                         alternate post by post.
+//   v0.4.0 (2026-11-26) — mode 'mix': copy, copy, new, new… (item.mode) while the CTA kind
+//                         alternates post by post — every pairing comes equally often.
+//   v0.5.0 (2026-11-26) — mix goes copy, new, copy, new… and its CTA kind changes every two posts
+//                         (still every pairing equally); new posts: the first step learns from up
+//                         to 200 strongest carousels per source (playbook + examples), combos by
+//                         strength «относительно своего времени».
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { buildPool, normSlide, textsOf } from './copy';
-import { buildBrief, questionsFor, writeItems, type WriteSlot } from './generate';
+import {
+  buildBrief,
+  buildCombos,
+  buildPlaybook,
+  loadExamples,
+  MIN_EXAMPLES,
+  questionsFor,
+  writeItems,
+  type WriteSlot,
+} from './generate';
 import {
   CAPTION_BAITS,
   ctaTextOf,
@@ -32,6 +47,7 @@ import {
   type ContentPlan,
   type CopySource,
   type CtaKind,
+  type ItemMode,
   type ItemStatus,
   type PlanCard,
   type PlanItem,
@@ -48,11 +64,14 @@ const DUP_SHARE = 0.5; // a carousel whose slides are ≥ 50 % already in the pl
 const LOCK_MS = 310_000; // > maxDuration of the step route (300 s)
 const PLAN_COLS = 'id,title,accounts,days,per_day,start_date,sources,settings,status,error,locked_until,created_at,updated_at';
 const ITEM_COLS =
-  'id,plan_id,account,day,slot,rubric,hook,title,slides,cta_kind,cta_variant,caption,source_username,source_shortcode,source_url,status,created_at,updated_at';
+  'id,plan_id,account,day,slot,rubric,hook,title,slides,mode,cta_kind,cta_variant,caption,source_username,source_shortcode,source_url,status,created_at,updated_at';
 
 const nowIso = () => new Date().toISOString();
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const modeOf = (s: PlanSettings): PlanMode => s.mode ?? 'write';
+/** How one post is made: its own mode (mix plans), else the plan's. */
+const itemModeOf = (s: PlanSettings, it: Pick<PlanItem, 'mode'>): ItemMode =>
+  it.mode ?? (modeOf(s) === 'copy' ? 'copy' : 'write');
 
 export interface CreatePlanInput {
   title?: string;
@@ -90,7 +109,7 @@ export async function createPlan(sb: SupabaseClient, input: CreatePlanInput): Pr
   const accounts = Array.from(new Set(input.accounts.map((a) => a.trim()).filter(Boolean))).slice(0, 10);
   if (!accounts.length) throw new Error('Укажи хотя бы один аккаунт.');
   if (!input.sources?.length) throw new Error('Выбери хотя бы одно досье.');
-  const mode: PlanMode = input.mode === 'copy' ? 'copy' : 'write';
+  const mode: PlanMode = input.mode === 'copy' || input.mode === 'mix' ? input.mode : 'write';
   const days = Math.max(1, Math.min(60, Math.round(input.days ?? 30)));
   const perDay = Math.max(1, Math.min(6, Math.round(input.per_day ?? 3)));
   const qMin = Math.max(1, Math.min(12, Math.round(input.q_min ?? 4)));
@@ -104,14 +123,15 @@ export async function createPlan(sb: SupabaseClient, input: CreatePlanInput): Pr
   let brief = '';
   let combos: PlanSettings['combos'] = [];
   let pool: CopySource[] = [];
-  if (mode === 'copy') {
-    pool = await buildPool(sb, input.sources, slots);
+  if (mode !== 'write') {
+    const copies = mode === 'mix' ? Math.ceil(slots / 2) : slots;
+    pool = await buildPool(sb, input.sources, copies);
     if (!pool.length) throw new Error('У выбранных досье нет каруселей, которые ещё не взяты в планы.');
     // spare for unreadable / near-duplicate carousels
-    pool = pool.slice(0, Math.max(slots * 2, slots + 60));
-  } else {
-    ({ brief, combos } = await buildBrief(sb, input.sources));
+    pool = pool.slice(0, Math.max(copies * 2, copies + 60));
   }
+  // what the new posts learn from (playbook) is built by the first step — it takes a minute
+  if (mode !== 'copy') combos = await buildCombos(sb, input.sources);
 
   const settings: PlanSettings = {
     mode,
@@ -123,7 +143,7 @@ export async function createPlan(sb: SupabaseClient, input: CreatePlanInput): Pr
     notes: (input.notes ?? '').trim(),
     brief,
     combos,
-    copy_pool: mode === 'copy' ? pool : undefined,
+    copy_pool: mode !== 'write' ? pool : undefined,
   };
 
   const { data: plan, error } = await sb
@@ -149,21 +169,25 @@ export async function createPlan(sb: SupabaseClient, input: CreatePlanInput): Pr
     for (let day = 1; day <= days; day++) {
       const usedToday = new Set<string>();
       for (let slot = 1; slot <= perDay; slot++) {
+        const k = (day - 1) * perDay + (slot - 1);
+        // mix: copy, new, copy, new… and the CTA kind changes every two posts there,
+        // so copy / new × keyword / neutral all come equally often
+        const itemMode: ItemMode = mode === 'mix' ? ((k + ai) % 2 === 0 ? 'copy' : 'write') : mode === 'copy' ? 'copy' : 'write';
         let combo: (typeof combos)[number] | null = null;
-        if (mode === 'write' && combos.length) {
+        if (itemMode === 'write' && combos.length) {
           const fresh = combos.filter((c) => !usedToday.has(c.rubric));
           const pool2 = fresh.length ? fresh : combos;
           // ~20 % exploration: flat weights instead of the winners' weights
           combo = Math.random() < 0.2 ? pool2[Math.floor(Math.random() * pool2.length)] : pickWeighted(pool2);
           if (combo) usedToday.add(combo.rubric);
         }
-        const k = (day - 1) * perDay + (slot - 1);
-        const kind: CtaKind = (k + ai) % 2 === 0 ? 'comment' : 'follow';
+        const kind: CtaKind = (mode === 'mix' ? (k >> 1) + ai : k + ai) % 2 === 0 ? 'comment' : 'follow';
         rows.push({
           plan_id: plan.id,
           account,
           day,
           slot,
+          mode: itemMode,
           rubric: combo?.rubric ?? null,
           hook: combo?.hook ?? null,
           cta_kind: kind,
@@ -302,7 +326,7 @@ async function stepCopy(sb: SupabaseClient, plan: ContentPlan, items: PlanItem[]
   const s = plan.settings;
   const pool = [...(s.copy_pool ?? [])];
   const seen = seenSlides(items);
-  const empty = items.filter((i) => !i.slides.length).slice(0, COPY_BATCH);
+  const empty = items.filter((i) => !i.slides.length && itemModeOf(s, i) === 'copy').slice(0, COPY_BATCH);
   const deadline = Date.now() + COPY_BUDGET_MS;
   let ranOut = false;
   let next = 0;
@@ -340,19 +364,35 @@ export async function stepPlan(sb: SupabaseClient, planId: string): Promise<bool
       await sb.from('content_plans').update({ status: 'done', error: null, updated_at: nowIso() }).eq('id', planId);
       return true;
     }
-    if (modeOf(plan.settings) === 'copy') {
+    // copies first (mix plans), then the new ones
+    if (empty.some((i) => itemModeOf(plan.settings, i) === 'copy')) {
       await stepCopy(sb, plan, items);
-      if (!items.some((i) => !i.slides.length)) {
-        await sb.from('content_plans').update({ status: 'done', error: null, updated_at: nowIso() }).eq('id', planId);
+    } else if (!plan.settings.learned && !plan.settings.brief) {
+      // first: learn from the sources' strongest carousels (one step, ~1–2 min)
+      const { examples, perSource } = await loadExamples(sb, plan.sources);
+      const settings: PlanSettings = { ...plan.settings, learned: perSource };
+      if (examples.length >= MIN_EXAMPLES) {
+        settings.examples = examples;
+        settings.playbook = await buildPlaybook(examples, plan.settings.language);
+      } else {
+        settings.brief = await buildBrief(sb, plan.sources); // too few slides read: the older brief
       }
+      await sb.from('content_plans').update({ settings, updated_at: nowIso() }).eq('id', planId);
     } else {
       const batch = empty.slice(0, BATCH);
-      const written = await writeItems(plan.settings, batch.map((i) => slotOf(plan.settings, i)), usedList(items));
+      const done = items.filter((i) => i.slides.length && itemModeOf(plan.settings, i) === 'write').length;
+      const written = await writeItems(
+        plan.settings,
+        batch.map((i) => slotOf(plan.settings, i)),
+        usedList(items),
+        Math.floor(done / BATCH)
+      );
       const n = await saveWritten(sb, plan.settings, batch, written);
       if (!n) throw new Error('Модель не вернула ни одной карусели — нажми «Продолжить».');
-      if (empty.length <= n) {
-        await sb.from('content_plans').update({ status: 'done', error: null, updated_at: nowIso() }).eq('id', planId);
-      }
+      for (const it of batch) if (written.some((w) => w.key === it.id && w.questions.length)) it.slides = ['written'];
+    }
+    if (!items.some((i) => !i.slides.length)) {
+      await sb.from('content_plans').update({ status: 'done', error: null, updated_at: nowIso() }).eq('id', planId);
     }
   } catch (e) {
     await sb.from('content_plans').update({ status: 'failed', error: errMsg(e), updated_at: nowIso() }).eq('id', planId);
@@ -366,8 +406,8 @@ export async function stepPlan(sb: SupabaseClient, planId: string): Promise<bool
 export async function resumePlan(sb: SupabaseClient, planId: string) {
   const { data: plan } = await sb.from('content_plans').select(PLAN_COLS).eq('id', planId).maybeSingle<ContentPlan>();
   const patch: Record<string, unknown> = { status: 'generating', error: null, locked_until: null, updated_at: nowIso() };
-  if (plan && modeOf(plan.settings) === 'copy' && !(plan.settings.copy_pool ?? []).length) {
-    const left = (await allItems(sb, planId)).filter((i) => !i.slides.length).length;
+  if (plan && modeOf(plan.settings) !== 'write' && !(plan.settings.copy_pool ?? []).length) {
+    const left = (await allItems(sb, planId)).filter((i) => !i.slides.length && itemModeOf(plan.settings, i) === 'copy').length;
     patch.settings = { ...plan.settings, copy_pool: await buildPool(sb, plan.sources, left + 30) };
   }
   await sb.from('content_plans').update(patch).eq('id', planId);
@@ -381,7 +421,7 @@ export async function regenerateItem(sb: SupabaseClient, itemId: string): Promis
   if (!plan) throw new Error('План не найден.');
   const items = await allItems(sb, plan.id);
 
-  if (modeOf(plan.settings) === 'copy') {
+  if (itemModeOf(plan.settings, it) === 'copy') {
     let pool = [...(plan.settings.copy_pool ?? [])];
     if (!pool.length) pool = await buildPool(sb, plan.sources, 30);
     const seen = seenSlides(items, it.id);
@@ -393,7 +433,12 @@ export async function regenerateItem(sb: SupabaseClient, itemId: string): Promis
       .eq('id', plan.id);
     if (!ok || it.source_shortcode === before) throw new Error('Не нашлось другой залетевшей карусели — добавь досье.');
   } else {
-    const written = await writeItems(plan.settings, [slotOf(plan.settings, it)], usedList(items, it.id));
+    const written = await writeItems(
+      plan.settings,
+      [slotOf(plan.settings, it)],
+      usedList(items, it.id),
+      Math.floor(Math.random() * 50)
+    );
     if (!(await saveWritten(sb, plan.settings, [it], written))) throw new Error('Модель не вернула карусель, попробуй ещё раз.');
   }
   await sb.from('content_plan_items').update({ status: 'draft' }).eq('id', it.id);
@@ -428,7 +473,7 @@ export async function listPlans(sb: SupabaseClient): Promise<PlanCard[]> {
       const list = (items ?? []) as { slides: string[]; status: string }[];
       return {
         ...p,
-        mode: (p.mode === 'copy' ? 'copy' : 'write') as PlanMode,
+        mode: (p.mode === 'copy' || p.mode === 'mix' ? p.mode : 'write') as PlanMode,
         total: list.length,
         written: list.filter((i) => i.slides.length).length,
         done: list.filter((i) => i.status === 'done').length,
@@ -441,7 +486,7 @@ export async function getPlan(sb: SupabaseClient, id: string): Promise<{ plan: C
   const { data: plan } = await sb.from('content_plans').select(PLAN_COLS).eq('id', id).maybeSingle<ContentPlan>();
   if (!plan) return null;
   // the brief and the pool are big and only needed on the server
-  const settings = { ...plan.settings, brief: '', copy_pool: undefined };
+  const settings = { ...plan.settings, brief: '', copy_pool: undefined, examples: undefined };
   return { plan: { ...plan, settings }, items: await allItems(sb, id) };
 }
 

@@ -66,6 +66,7 @@ export interface FetchState {
     failed: number; // carousels whose images did not load (links expired)
     read: number; // carousels read in this run
     refresh?: { cursor?: string | null; pages: number; done?: boolean }; // fresh links from the feed
+    top?: string[]; // ids of the strongest carousels (read in full), picked once per run
   };
   done?: boolean;
   /** failed rounds of the current feed request in a row */
