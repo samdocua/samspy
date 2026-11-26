@@ -14,6 +14,7 @@
 //                         settings.playbook (Claude's notes) + settings.examples; mix plans go
 //                         copy, new, copy, new… (the CTA kind changes every two posts there).
 //   v0.6.0 (2026-11-26) — settings.slang: new posts in current American slang (copies never).
+//   v0.7.0 (2026-11-26) — item.review: second opinion on a new post (GPT) + what the script found.
 
 /** Last slides that ask to comment a keyword. Universal (fit any post). Rotated. */
 export const DEFAULT_CTAS = [
@@ -111,6 +112,15 @@ export interface ContentPlan {
   updated_at: string;
 }
 
+/** Check of a new post: script rules + a second model (approve or fix). */
+export interface PlanReview {
+  by: string; // reviewer model
+  verdict: 'ok' | 'fixed' | 'skipped';
+  note?: string; // what the reviewer changed and why (Russian) / why not checked
+  issues: string[]; // what the script found before the review
+  left?: string[]; // what the script still finds after it
+}
+
 export interface PlanItem {
   id: string;
   plan_id: string;
@@ -128,6 +138,7 @@ export interface PlanItem {
   source_username: string | null;
   source_shortcode: string | null;
   source_url: string | null;
+  review: PlanReview | null;
   status: ItemStatus;
   created_at: string;
   updated_at: string;

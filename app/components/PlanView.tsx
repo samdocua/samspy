@@ -21,6 +21,8 @@
 //   v0.5.0 (2026-11-26) — «Чему научился Claude»: carousels learned from per source + the playbook;
 //                         the form explains «Распознать слайды»; mix = copy, new, copy, new.
 //   v0.6.0 (2026-11-26) — «Американский сленг» checkbox for new posts (copies stay 1:1).
+//   v0.7.0 (2026-11-26) — new posts show the check: «✓ проверено GPT» / «✎ исправлено GPT» + note,
+//                         and what the script still finds.
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -709,6 +711,20 @@ function ItemCard({
         {plan.settings.mode === 'mix' && (
           <span className="rounded-full bg-gray-900 px-2 py-0.5 text-white">{isCopy ? 'копия' : 'новый'}</span>
         )}
+        {it.review && !isCopy && (
+          <span
+            className={`rounded-full px-2 py-0.5 ${
+              it.review.verdict === 'ok'
+                ? 'bg-emerald-50 text-emerald-700'
+                : it.review.verdict === 'fixed'
+                  ? 'bg-sky-50 text-sky-700'
+                  : 'bg-amber-50 text-amber-700'
+            }`}
+            title={it.review.note ?? ''}
+          >
+            {it.review.verdict === 'ok' ? '✓ проверено GPT' : it.review.verdict === 'fixed' ? '✎ исправлено GPT' : 'не проверено'}
+          </span>
+        )}
         {it.rubric && <span className="rounded-full border border-edge px-2 py-0.5 text-muted">{it.rubric}</span>}
         {it.hook && <span className="rounded-full border border-edge px-2 py-0.5 text-muted">{it.hook}</span>}
         <span className="rounded-full border border-accent/40 bg-accent/5 px-2 py-0.5 font-mono font-semibold text-accent" title={ctaText}>
@@ -727,6 +743,12 @@ function ItemCard({
         )}
       </div>
       {it.title && <p className="mb-2 font-semibold leading-snug">{it.title}</p>}
+      {it.review && !isCopy && (it.review.note || it.review.left?.length) && (
+        <p className="mb-2 text-xs leading-snug text-muted">
+          {it.review.note}
+          {it.review.left?.length ? <span className="block text-amber-700">Осталось: {it.review.left.join('; ')}</span> : null}
+        </p>
+      )}
 
       {editing ? (
         <div className="space-y-2">
