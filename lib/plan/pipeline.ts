@@ -25,6 +25,7 @@
 //                         (still every pairing equally); new posts: the first step learns from up
 //                         to 200 strongest carousels per source (playbook + examples), combos by
 //                         strength «относительно своего времени».
+//   v0.5.1 (2026-11-26) — «Американский сленг» (settings.slang) for new posts; copies untouched.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { buildPool, normSlide, textsOf } from './copy';
@@ -87,6 +88,7 @@ export interface CreatePlanInput {
   cta_variants?: string[];
   follow_variants?: string[];
   notes?: string;
+  slang?: boolean;
 }
 
 function pickWeighted<T extends { weight: number }>(list: T[]): T | null {
@@ -141,6 +143,7 @@ export async function createPlan(sb: SupabaseClient, input: CreatePlanInput): Pr
     cta_variants: cleanList(input.cta_variants, DEFAULT_CTAS),
     follow_variants: cleanList(input.follow_variants, DEFAULT_FOLLOW_CTAS),
     notes: (input.notes ?? '').trim(),
+    slang: mode !== 'copy' && input.slang === true,
     brief,
     combos,
     copy_pool: mode !== 'write' ? pool : undefined,
