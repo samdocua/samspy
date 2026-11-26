@@ -59,6 +59,8 @@
 //   v1.0.3 (2026-11-20) — settings export / import removed (not needed).
 //   v1.1.0 (2026-11-22) — carousels from «План»: «Скачать все» marks the plan item done.
 //   v1.1.1 (2026-11-26) — imported texts: line wraps of the original layout glued (joinSoftBreaks).
+//   v1.2.0 (2026-11-26) — «📱 На телефон»: slides uploaded to a link (7 days) with a QR code; the
+//                         phone page saves them to Photos (long press or «Сохранить все»).
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -83,6 +85,7 @@ import {
 import { canvasToBlob, compressImage, renderSlide, type TextOptions } from '@/lib/slides/render';
 import { pickSaveTarget, stamp } from '@/lib/slides/save';
 import { zipSync } from 'fflate';
+import QRCode from 'qrcode';
 import type { SlidesImport } from '@/lib/carousels/toSlides';
 import { joinSoftBreaks } from '@/lib/carousels/postprocess';
 import { placementIssues, textIssues, type CheckIssue } from '@/lib/slides/checkLocal';
@@ -213,6 +216,7 @@ export default function SlidesView({
   const [dragOver, setDragOver] = useState(false);
   const [stripDrag, setStripDrag] = useState(false);
   const [pendingImport, setPendingImport] = useState<SlidesImport | null>(null);
+  const [importTitle, setImportTitle] = useState<string | null>(null); // for the phone link page
   const [notice, setNotice] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [pool, setPool] = useState<Pool | null>(null);
@@ -487,6 +491,7 @@ export default function SlidesView({
         return;
       }
       replaceSlides(mode === 'replace' ? fresh : [...slidesRef.current, ...fresh]);
+      setImportTitle(imp.title);
       planItemRef.current = mode === 'replace' ? imp.planItemId ?? null : null;
       setActiveId(fresh[0].id);
       setPendingImport(null);
@@ -645,6 +650,48 @@ export default function SlidesView({
     rememberUsed([slide]);
   }
 
+  // --- «На телефон»: upload to a share link + QR ---------------------------------------
+  const [sending, setSending] = useState(false);
+  const [phone, setPhone] = useState<{ url: string; qr: string } | null>(null);
+
+  async function sendToPhone() {
+    const ready = slides.filter((s) => s.source);
+    if (!ready.length) return;
+    setSending(true);
+    try {
+      const blobs: Blob[] = [];
+      for (const s of ready) blobs.push(await slideBlob(s));
+      const res = await fetch('/api/shares', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: importTitle ?? `Слайды ${new Date().toLocaleDateString('ru-RU')}`, count: blobs.length }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      const uploads = data.uploads as { path: string; url: string }[];
+      await Promise.all(
+        uploads.map(async (u, i) => {
+          const r = await fetch(u.url, { method: 'PUT', headers: { 'Content-Type': 'image/jpeg' }, body: blobs[i] });
+          if (!r.ok) throw new Error(`загрузка слайда ${i + 1}: HTTP ${r.status}`);
+        })
+      );
+      const url = `${window.location.origin}/s/${data.token}`;
+      setPhone({ url, qr: await QRCode.toDataURL(url, { width: 360, margin: 1 }) });
+      rememberUsed(ready);
+      if (planItemRef.current) {
+        void fetch(`/api/plans/items/${planItemRef.current}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'done' }),
+        });
+      }
+    } catch (e) {
+      flash(`Не удалось отправить на телефон: ${(e as Error).message}`);
+    } finally {
+      setSending(false);
+    }
+  }
+
   /** All slides with a photo in one ZIP: slide-01.jpg, slide-02.jpg … (strip order). */
   async function downloadAll() {
     const ready = slides.map((s, i) => ({ s, i })).filter(({ s }) => s.source);
@@ -718,6 +765,31 @@ export default function SlidesView({
   return (
     <div>
       {/* hand-off from «Карусели» when the workspace already has slides */}
+      {phone && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setPhone(null)}>
+          <div className="w-full max-w-sm rounded-2xl bg-white p-5 text-center" onClick={(e) => e.stopPropagation()}>
+            <p className="font-semibold">Слайды на телефон</p>
+            <p className="mt-1 text-xs text-muted">Наведи камеру iPhone на код. Ссылка живёт 7 дней.</p>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={phone.qr} alt="QR-код ссылки" className="mx-auto mt-3 w-60" />
+            <input readOnly value={phone.url} onFocus={(e) => e.target.select()} className={`${inputCls} mt-3 text-xs`} />
+            <div className="mt-3 flex justify-center gap-2">
+              <button
+                onClick={() => void navigator.clipboard.writeText(phone.url).then(() => flash('Ссылка скопирована'))}
+                className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white"
+              >
+                Копировать ссылку
+              </button>
+              <a href={phone.url} target="_blank" rel="noreferrer" className="rounded-lg border border-edge px-4 py-2 text-sm">
+                Открыть
+              </a>
+              <button onClick={() => setPhone(null)} className="px-3 text-sm text-muted">
+                Закрыть
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {pendingImport && (
         <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-accent/40 bg-accent/5 px-4 py-3 text-sm">
           <span className="mr-auto">
@@ -796,6 +868,16 @@ export default function SlidesView({
                   className="rounded-lg border border-edge bg-white px-5 py-2 text-sm font-medium disabled:opacity-40"
                 >
                   {zipping ? 'Собираю архив…' : `Скачать все (${readyCount}) · ZIP`}
+                </button>
+              )}
+              {readyCount > 0 && (
+                <button
+                  onClick={() => void sendToPhone()}
+                  disabled={sending}
+                  title="Загрузить слайды по ссылке (7 дней) и открыть их на iPhone по QR-коду"
+                  className="rounded-lg border border-edge bg-white px-5 py-2 text-sm font-medium disabled:opacity-40"
+                >
+                  {sending ? 'Загружаю…' : '📱 На телефон'}
                 </button>
               )}
               {pool && active && (
