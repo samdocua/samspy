@@ -24,6 +24,8 @@
 //   v0.4.0 (2026-11-26) — cleanCarouselSlides(): OCR of a competitor carousel → its slide texts
 //                         verbatim, without brand names / app promos / their closing CTA («План»,
 //                         copy mode).
+//   v0.4.1 (2026-11-26) — stop_reason «refusal» is an error (the caller retries in smaller
+//                         parts); tagPosts() can take another model.
 
 import sharp from 'sharp';
 import type { Breakdown, DossierAI, Vocab } from './types';
@@ -61,7 +63,9 @@ async function claude(model: string, content: Content[], maxTokens: number, atte
     return claude(model, content, maxTokens, attempt + 1);
   }
   if (!res.ok) throw new Error(`Claude HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const data = (await res.json()) as { content?: { type: string; text?: string }[] };
+  const data = (await res.json()) as { content?: { type: string; text?: string }[]; stop_reason?: string };
+  // the model stopped on its own safety check (spicy couple questions) — the caller retries smaller
+  if (data.stop_reason === 'refusal') throw new Error('модель отказалась отвечать');
   return (data.content ?? [])
     .filter((c) => c.type === 'text')
     .map((c) => c.text ?? '')
@@ -274,9 +278,9 @@ export interface PostTags {
   first_line: string;
 }
 
-export async function tagPosts(posts: PostForAI[], vocab: Vocab): Promise<PostTags[]> {
+export async function tagPosts(posts: PostForAI[], vocab: Vocab, model = TAG_MODEL): Promise<PostTags[]> {
   const answer = await claude(
-    TAG_MODEL,
+    model,
     [
       {
         type: 'text',
