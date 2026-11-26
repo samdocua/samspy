@@ -8,6 +8,7 @@
 //                         (settings.copy_pool, item.source_*); CTA kinds alternate post by post:
 //                         'comment' (keyword) / 'follow' (follow for more) — DEFAULT_FOLLOW_CTAS;
 //                         follow posts get a comment-bait caption (CAPTION_BAITS).
+//   v0.3.1 (2026-11-26) — neutral last slides vary: send / save / tag / follow / try.
 
 /** Last slides that ask to comment a keyword. Universal (fit any post). Rotated. */
 export const DEFAULT_CTAS = [
@@ -19,13 +20,17 @@ export const DEFAULT_CTAS = [
   'Comment SEND and they’re yours',
 ];
 
-/** Neutral last slides: follow for more. Universal. Rotated. */
+/** Neutral last slides (no keyword): send / save / tag / follow / try. Universal. Rotated. */
 export const DEFAULT_FOLLOW_CTAS = [
+  'Send this to your partner',
+  'Save this for your next date night',
   'Follow for more questions like these',
+  'Tag the person you’d ask first',
+  'Send this to someone you’d ask these',
+  'Try these tonight',
+  'Save these for your next deep talk',
   'Follow for new questions every day',
-  'Follow so you don’t miss the next ones',
-  'Follow for more couple questions',
-  'Follow for your next date night questions',
+  'Send it to your person and compare answers',
 ];
 
 /** Captions of «follow» posts in copy mode: invite a comment without a keyword. Rotated. */
