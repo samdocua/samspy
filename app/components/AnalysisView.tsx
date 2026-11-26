@@ -33,6 +33,8 @@
 //   v0.4.5 (2026-11-23) — a failed list load says so instead of «нет ни одного досье».
 //   v0.5.0 (2026-11-26) — dossier: «Распознать слайды» (all slides of the top 200 carousels, covers
 //                         of the rest, then rubrics and the dossier are redone from the slide texts).
+//   v0.5.1 (2026-11-26) — the tab no longer steps jobs (the worker does): it only refreshes the
+//                         cards every 6 s while something runs.
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -144,28 +146,22 @@ export default function AnalysisView() {
     void load();
   }, [load]);
 
-  // keep advancing unfinished jobs while the tab is open
+  // jobs run in the background (worker); the open tab only refreshes the cards while any runs —
+  // stepping from the browser too made the database work twice and the tab slow
   useEffect(() => {
     let alive = true;
     (async () => {
       while (alive) {
-        const active = cardsRef.current.filter((c) => isActive(c.job?.status));
-        if (!active.length) {
-          await sleep(2000);
-          continue;
+        await sleep(cardsRef.current.some((c) => isActive(c.job?.status)) ? 6000 : 20000);
+        if (!alive) break;
+        if (!cardsRef.current.some((c) => isActive(c.job?.status))) continue;
+        try {
+          const res = await fetch('/api/analysis');
+          const data = await res.json();
+          if (data.cards && alive) replaceCards(data.cards);
+        } catch {
+          /* next round */
         }
-        for (const c of active) {
-          if (!alive) break;
-          try {
-            const res = await fetch(`/api/analysis/jobs/${c.job!.id}/step`, { method: 'POST' });
-            const data = await res.json();
-            if (data.card && alive) upsertCard(data.card);
-            if (data.busy || data.card?.job?.status === 'apify') await sleep(5000);
-          } catch {
-            await sleep(5000);
-          }
-        }
-        await sleep(1500);
       }
     })();
     return () => {
