@@ -8,15 +8,17 @@
 //   /login           — the login page
 //   /api/auth/*      — login/logout endpoints
 //   /api/cron/*      — cron / background worker, each checks its own secret, no cookie
+//   /s/*, /api/s/*   — slides sent «На телефон»: the unguessable token in the link is the key
 //
 // Version history:
 //   v0.1.0 (2026-11-17) — cookie check + redirect/401.
 //   v0.1.1 (2026-11-23) — /api/cron/step (background worker) noted.
+//   v0.2.0 (2026-11-26) — /s/<token> phone page of shared slides is public.
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { AUTH_COOKIE, expectedAuthToken, safeEqual } from '@/lib/auth';
 
-const PUBLIC_PATHS = ['/login', '/api/auth', '/api/cron'];
+const PUBLIC_PATHS = ['/login', '/api/auth', '/api/cron', '/s', '/api/s'];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
