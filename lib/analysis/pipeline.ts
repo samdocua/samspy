@@ -58,6 +58,9 @@
 //                         top 200 carousels + covers of the rest; expired image links are refreshed
 //                         from the feed (ScrapeCreators); then every post is re-tagged with the slide
 //                         texts (fresh rubric vocabulary) and the dossier is rewritten.
+//   v0.6.1 (2026-11-26) — the 200 read in full are the strongest «относительно своего времени»
+//                         (likes / median of ±15 days, ≤ 30 a month — lib/analysis/winners.ts),
+//                         not just the most liked.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -84,6 +87,7 @@ import {
   type PostForAI,
 } from './ai';
 import { scCommentsPage, scEnabled, ScFatal, ScNotFound, scPostsPage, scProfile } from '@/lib/scrape/sc';
+import { topWinners } from './winners';
 import { cardSummary, computeStats, groupStats, hasCta, metricOf, ratioOf } from './stats';
 import type {
   AccountCard,
@@ -554,17 +558,18 @@ async function stepSlides(sb: SupabaseClient, job: AnalysisJob, deadline: number
     return 'slides';
   }
 
-  // 1) every slide of the best carousels
-  const { data: top } = await sb
-    .from('analysis_posts')
-    .select('id,shortcode,slides,display_url,slide_urls,ocr_text')
-    .eq('job_id', job.id)
-    .eq('kind', 'carousel')
-    .gte('posted_at', from)
-    .not('likes', 'is', null)
-    .order('likes', { ascending: false })
-    .limit(SLIDES_TOP)
-    .returns<SlidePost[]>();
+  // 1) every slide of the strongest carousels (picked once per run)
+  if (!st.top) {
+    st.top = (await topWinners(sb, job.id, from, SLIDES_TOP)).map((w) => w.id);
+    await setJob(sb, job.id, { scrape: job.scrape });
+  }
+  const { data: top } = st.top.length
+    ? await sb
+        .from('analysis_posts')
+        .select('id,shortcode,slides,display_url,slide_urls,ocr_text')
+        .in('id', st.top)
+        .returns<SlidePost[]>()
+    : { data: [] as SlidePost[] };
   const full = (top ?? []).filter((p) => p.ocr_text !== '' && !ocrCoversSlides(p.ocr_text, p.slides));
   if (full.length) {
     let next = 0;

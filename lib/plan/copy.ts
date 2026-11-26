@@ -16,12 +16,14 @@
 //                         slides; before, such carousels were skipped (a whole source dropped out).
 //   v0.1.2 (2026-11-26) — line wraps of the original layout glued (joinSoftBreaks): they made
 //                         one-word lines on my slides.
+//   v0.2.0 (2026-11-26) — the pool is ranked by strength «относительно своего времени» (likes /
+//                         median of ±15 days, lib/analysis/winners.ts), not by plain likes.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { cleanCarouselSlides, ocrCarousel } from '@/lib/analysis/ai';
 import { joinSoftBreaks } from '@/lib/carousels/postprocess';
-import { ratioOf } from '@/lib/analysis/stats';
 import type { AnalysisAccount, AnalysisJob, AnalysisPost } from '@/lib/analysis/types';
+import { rankCarousels } from '@/lib/analysis/winners';
 import { scEnabled, scPost } from '@/lib/scrape/sc';
 import type { CopySource } from './types';
 
@@ -47,23 +49,14 @@ export async function buildPool(sb: SupabaseClient, sources: string[], need: num
     if (!acc?.last_job_id) continue;
     const { data: job } = await sb
       .from('analysis_jobs')
-      .select('id,stats')
+      .select('id,stats,period_from')
       .eq('id', acc.last_job_id)
-      .maybeSingle<Pick<AnalysisJob, 'id' | 'stats'>>();
+      .maybeSingle<Pick<AnalysisJob, 'id' | 'stats' | 'period_from'>>();
     if (!job?.stats) continue;
-    // carousel ratio = likes / median likes → the most liked are the best
-    const { data: posts } = await sb
-      .from('analysis_posts')
-      .select('shortcode,url,kind,likes,views,slides,is_pinned')
-      .eq('job_id', job.id)
-      .eq('kind', 'carousel')
-      .not('likes', 'is', null)
-      .order('likes', { ascending: false })
-      .limit(PER_SOURCE)
-      .returns<Pick<AnalysisPost, 'shortcode' | 'url' | 'kind' | 'likes' | 'views' | 'slides' | 'is_pinned'>[]>();
-    const list = (posts ?? [])
+    const ranked = (await rankCarousels(sb, job.id, job.period_from)).slice(0, PER_SOURCE);
+    const list: CopySource[] = ranked
       .filter((p) => !used.has(p.shortcode) && (p.slides ?? 2) >= 2)
-      .map((p) => ({ username, job_id: job.id, shortcode: p.shortcode, url: p.url, ratio: ratioOf(p, job.stats!) }));
+      .map((p) => ({ username, job_id: job.id, shortcode: p.shortcode, url: p.url, ratio: p.strength }));
     // winners; if a source has few, its next best fill in
     const winners = list.filter((p) => (p.ratio ?? 0) >= MIN_RATIO);
     lists.push(winners.length >= Math.ceil(need / Math.max(1, sources.length)) ? winners : list);

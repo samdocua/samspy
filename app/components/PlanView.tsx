@@ -18,6 +18,8 @@
 //                         «↻ Другой пост».
 //   v0.3.1 (2026-11-26) — neutral CTA wording (send / save / tag / follow), badge «нейтральный».
 //   v0.4.0 (2026-11-26) — mode «Вперемешку»: half copies, half new; the card says which.
+//   v0.5.0 (2026-11-26) — «Чему научился Claude»: carousels learned from per source + the playbook;
+//                         the form explains «Распознать слайды»; mix = copy, new, copy, new.
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -303,8 +305,13 @@ function NewPlanForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           {mode === 'copy'
             ? 'Каждый пост — одна залетевшая карусель конкурента (от самых сильных, без повторов между планами): обложка и все слайды целиком, с вариантами ответа, без названий бренда и рекламы. Последний слайд — наш призыв.'
             : mode === 'mix'
-              ? '50 на 50: копия, копия, новый, новый… Копии — залетевшие карусели 1 в 1, новые — Claude в их стиле. Призыв в конце чередуется отдельно, так что у копий и у новых оба типа призыва.'
-              : 'Claude пишет новые карусели в стиле лучших постов выбранных досье.'}
+              ? '50 на 50: копия, новый, копия, новый… Копии — залетевшие карусели 1 в 1, новые — Claude по плейбуку залетевших. Призыв в конце меняется через два поста, так что у копий и у новых оба типа призыва.'
+              : 'Claude сначала изучает до 200 сильнейших каруселей каждого досье (залёт относительно своего времени) и пишет плейбук, потом пишет новые карусели по нему.'}
+          {mode !== 'copy' && (
+            <span className="block">
+              Claude учится только на каруселях, у которых распознаны все слайды — нажми «Распознать слайды» в досье перед созданием плана.
+            </span>
+          )}
         </p>
       </div>
 
@@ -516,6 +523,8 @@ function PlanDetail({
         </span>
       </div>
 
+      {plan.settings.mode !== 'copy' && <Learned plan={plan} generating={card?.status === 'generating'} />}
+
       {written < items.length && (
         <div>
           <div className="mb-1 text-xs text-muted">
@@ -566,6 +575,43 @@ function PlanDetail({
         ))}
         {!days.length && <p className="text-sm text-muted">Здесь пусто.</p>}
       </div>
+    </div>
+  );
+}
+
+// --- what the writer learned from ---------------------------------------------------------------------
+function Learned({ plan, generating }: { plan: ContentPlan; generating: boolean }) {
+  const [open, setOpen] = useState(false);
+  const s = plan.settings;
+  if (!s.learned) {
+    if (s.brief === '' && generating)
+      return <p className="text-xs text-muted">Claude изучает сильнейшие карусели досье и пишет плейбук (1–2 мин)…</p>;
+    return null; // older plans: the 12-example brief
+  }
+  const total = Object.values(s.learned).reduce((a, b) => a + b, 0);
+  return (
+    <div className="rounded-xl border border-edge bg-white p-4 text-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium">Чему научился Claude:</span>
+        <span className="text-muted">
+          {Object.entries(s.learned)
+            .map(([u, n]) => `@${u} — ${n}`)
+            .join(' · ')}{' '}
+          каруселей
+        </span>
+        {s.playbook && (
+          <button onClick={() => setOpen(!open)} className="ml-auto text-xs font-medium text-accent">
+            {open ? 'Скрыть плейбук' : 'Показать плейбук'}
+          </button>
+        )}
+      </div>
+      {!s.playbook && (
+        <p className="mt-1 text-xs text-amber-700">
+          Распознанных каруселей мало ({total}) — Claude писал по 12 лучшим примерам. Нажми «Распознать слайды» в досье и создай план
+          заново.
+        </p>
+      )}
+      {open && s.playbook && <div className="mt-3 whitespace-pre-line text-[13px] leading-relaxed">{s.playbook}</div>}
     </div>
   );
 }
