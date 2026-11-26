@@ -10,7 +10,7 @@ import { createServiceClient } from '@/lib/supabase';
 import { stepPlan } from '@/lib/plan/pipeline';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 300; // one Claude call for a batch of 8 carousels
+export const maxDuration = 300; // one batch of 4 new carousels: Claude writes, GPT checks
 
 export async function POST(_req: Request, { params }: { params: { id: string } }) {
   try {

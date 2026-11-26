@@ -28,8 +28,11 @@
 //                         flirty is fine, never explicit); quotes inside JSON values repaired; if
 //                         nothing comes back — a second try without the competitor examples (spicy
 //                         ones can make the model refuse); the error names the stop reason.
-//   v0.5.2 (2026-11-26) — the writer runs without up-front thinking (Sonnet 5.5 thinks by default
-//                         and its thinking used up max_tokens: answers came back cut off).
+//   v0.5.2 (2026-11-26) — the writer thinks at medium effort with room for it (16k tokens, batches
+//                         of 4 — Sonnet 5.5's default high-effort thinking used up max_tokens and
+//                         cut answers off); if it still runs out — the batch again without thinking.
+//                         Shorter slides: cover 5–8 words (≤ 10; a «send this to…» task hook ≤ 12),
+//                         a question ≤ 16 words (answer options on their own lines).
 
 import { thinkingOff } from '@/lib/anthropic';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -159,7 +162,7 @@ interface Answer {
 async function claude(
   content: { text: string; cache?: boolean }[],
   maxTokens: number,
-  think = true,
+  think: 'default' | 'medium' | 'off' = 'default',
   attempt = 1
 ): Promise<Answer> {
   const key = process.env.ANTHROPIC_API_KEY;
@@ -172,7 +175,7 @@ async function claude(
     body: JSON.stringify({
       model: PLAN_MODEL,
       max_tokens: maxTokens,
-      ...(think ? {} : thinkingOff(PLAN_MODEL)),
+      ...(think === 'off' ? thinkingOff(PLAN_MODEL) : think === 'medium' ? { output_config: { effort: 'medium' } } : {}),
       messages: [
         {
           role: 'user',
@@ -381,7 +384,7 @@ ${s.brief || '(no source dossiers)'}`;
   // shared part of every batch first (cached by the API), then what changes per batch
   const shared = `Context: I run a question-card app for couples and post carousels with conversation questions for partners. Flirty, playful and a bit spicy is the genre and is fine; keep everything non-explicit (no sexual acts or body details spelled out) so the posts stay Instagram-safe.
 
-You write Instagram carousel posts for my accounts about questions for couples. Each carousel = a cover slide with a hook + one question per slide + a last slide that asks for a comment or a follow (the last slide is given, do not write it). The background photos already exist; your texts are overlaid on them, so keep every slide SHORT (cover ≤ 14 words, a question ≤ 22 words; answer options, if you use them, on separate lines like «A) …»).
+You write Instagram carousel posts for my accounts about questions for couples. Each carousel = a cover slide with a hook + one question per slide + a last slide that asks for a comment or a follow (the last slide is given, do not write it). The background photos already exist; your texts are overlaid on them, so keep every slide SHORT: the cover hook 5–8 words, never more than 10 (a «task» hook like «Send this to your boyfriend, he has to answer one» may take up to 12); a question at most 16 words, answer options, if you use them, on separate short lines like «A) …».
 
 Write in ${s.language}. Make the hooks and questions as catchy as the strongest examples: same kinds of hooks, same kinds of questions, same tone — but your own words; never copy a cover or a question, not even reworded closely. No emojis on the cover and questions, no numbering inside the questions.
 
@@ -409,20 +412,24 @@ Inside text values never use the " character — use «» or ' instead.
 Answer with ONLY this JSON:
 {"items":[{"key":"...","title":"...","cover":"...","questions":["...","..."],"caption":"..."}]}`;
 
-  const maxTokens = Math.min(16000, 700 * slots.length + 800);
-  // no up-front thinking: it counted against max_tokens and cut the answer off (stop max_tokens)
-  const first = await claude(
-    [{ text: shared, cache: true }, { text: perBatchOf(examplesFor(s.examples ?? [], batch)) }],
-    maxTokens,
-    false
-  );
-  const items = parseItems(first.text);
-  if (items.length) return items;
-  // nothing came back (spicy examples can make the model refuse): once more with the playbook only
-  const second = await claude([{ text: shared, cache: true }, { text: perBatchOf([]) }], maxTokens, false);
-  const retry = parseItems(second.text);
-  if (retry.length) return retry;
+  // thinking counts against max_tokens: medium effort + 16k leaves room for it and the answer
+  const maxTokens = 16000;
+  const withExamples = perBatchOf(examplesFor(s.examples ?? [], batch));
+  const tries: { label: string; text: string; think: 'medium' | 'off' }[] = [
+    { label: 'с размышлением', text: withExamples, think: 'medium' },
+    { label: 'без размышления', text: withExamples, think: 'off' }, // ran out of tokens anyway
+    { label: 'без примеров', text: perBatchOf([]), think: 'off' }, // spicy examples → refusal
+  ];
+  const stops: string[] = [];
+  let last = '';
+  for (const t of tries) {
+    const a = await claude([{ text: shared, cache: true }, { text: t.text }], maxTokens, t.think);
+    const items = parseItems(a.text);
+    if (items.length) return items;
+    stops.push(`${t.label}: ${a.stop}`);
+    last = a.text || last;
+  }
   throw new Error(
-    `Модель не вернула карусели (stop: ${first.stop} / ${second.stop}): ${(second.text || first.text).replace(/\s+/g, ' ').slice(0, 160) || 'пустой ответ'}`
+    `Модель не вернула карусели (${stops.join(' / ')}): ${last.replace(/\s+/g, ' ').slice(0, 160) || 'пустой ответ'}`
   );
 }

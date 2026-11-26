@@ -26,6 +26,9 @@
 //                         to 200 strongest carousels per source (playbook + examples), combos by
 //                         strength «относительно своего времени».
 //   v0.5.1 (2026-11-26) — «Американский сленг» (settings.slang) for new posts; copies untouched.
+//   v0.6.0 (2026-11-26) — new posts in batches of 4, then checked: script rules (lengths, count,
+//                         repeats, near-copies of competitors) + a second model (GPT) approves or
+//                         fixes each; item.review keeps the verdict and the note.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { buildPool, normSlide, textsOf } from './copy';
@@ -38,7 +41,9 @@ import {
   questionsFor,
   writeItems,
   type WriteSlot,
+  type Written,
 } from './generate';
+import { codeIssues, competitorLines, reviewItems } from './review';
 import {
   CAPTION_BAITS,
   ctaTextOf,
@@ -53,10 +58,11 @@ import {
   type PlanCard,
   type PlanItem,
   type PlanMode,
+  type PlanReview,
   type PlanSettings,
 } from './types';
 
-const BATCH = 8; // mode 'write': carousels per Claude call
+const BATCH = 4; // mode 'write': carousels per Claude call (it thinks first; then the review)
 const COPY_BATCH = 6; // mode 'copy': carousels per step (OCR of a carousel takes ~10–20 s)
 const COPY_CONCURRENCY = 3;
 const COPY_TRIES = 6; // pool entries tried for one slot (unreadable / near-duplicate ones skipped)
@@ -65,7 +71,7 @@ const DUP_SHARE = 0.5; // a carousel whose slides are ≥ 50 % already in the pl
 const LOCK_MS = 310_000; // > maxDuration of the step route (300 s)
 const PLAN_COLS = 'id,title,accounts,days,per_day,start_date,sources,settings,status,error,locked_until,created_at,updated_at';
 const ITEM_COLS =
-  'id,plan_id,account,day,slot,rubric,hook,title,slides,mode,cta_kind,cta_variant,caption,source_username,source_shortcode,source_url,status,created_at,updated_at';
+  'id,plan_id,account,day,slot,rubric,hook,title,slides,mode,cta_kind,cta_variant,caption,source_username,source_shortcode,source_url,review,status,created_at,updated_at';
 
 const nowIso = () => new Date().toISOString();
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -246,11 +252,43 @@ function slotOf(s: PlanSettings, it: PlanItem): WriteSlot {
   };
 }
 
+/**
+ * New carousels → script checks → second opinion (GPT approves or fixes) → script checks again.
+ * `all` = every item of the plan (repeats are checked against them).
+ */
+async function checkWritten(
+  s: PlanSettings,
+  batch: PlanItem[],
+  all: PlanItem[],
+  written: Written[]
+): Promise<{ written: Written[]; reviews: Map<string, PlanReview> }> {
+  const ids = new Set(batch.map((i) => i.id));
+  const used = new Set<string>();
+  for (const i of all) if (!ids.has(i.id)) for (const t of i.slides.slice(0, -1)) used.add(normSlide(t));
+  const competitors = competitorLines(s.examples);
+  const slots = new Map(batch.map((i) => [i.id, slotOf(s, i)]));
+  const drafts = written
+    .filter((w) => slots.has(w.key))
+    .map((w) => {
+      const slot = slots.get(w.key)!;
+      return { ...w, questionsWanted: slot.questions, cta: slot.cta, issues: codeIssues(w, slot.questions, used, competitors) };
+    });
+  const { drafts: checked, reviews } = await reviewItems(s, drafts);
+  for (const d of checked) {
+    const r = reviews.get(d.key);
+    const left = codeIssues(d, slots.get(d.key)!.questions, used, competitors);
+    if (r && left.length) r.left = left;
+  }
+  const byKey = new Map(checked.map((d) => [d.key, d]));
+  return { written: written.map((w) => ({ ...w, ...(byKey.get(w.key) ?? {}) })), reviews };
+}
+
 async function saveWritten(
   sb: SupabaseClient,
   s: PlanSettings,
   items: PlanItem[],
-  written: Awaited<ReturnType<typeof writeItems>>
+  written: Written[],
+  reviews?: Map<string, PlanReview>
 ): Promise<number> {
   const byKey = new Map(written.map((w) => [w.key, w]));
   let n = 0;
@@ -267,6 +305,7 @@ async function saveWritten(
         title: w.title,
         slides: [w.cover, ...w.questions, cta],
         caption,
+        review: reviews?.get(it.id) ?? null,
         updated_at: nowIso(),
       })
       .eq('id', it.id);
@@ -384,13 +423,14 @@ export async function stepPlan(sb: SupabaseClient, planId: string): Promise<bool
     } else {
       const batch = empty.slice(0, BATCH);
       const done = items.filter((i) => i.slides.length && itemModeOf(plan.settings, i) === 'write').length;
-      const written = await writeItems(
+      const drafts = await writeItems(
         plan.settings,
         batch.map((i) => slotOf(plan.settings, i)),
         usedList(items),
         Math.floor(done / BATCH)
       );
-      const n = await saveWritten(sb, plan.settings, batch, written);
+      const { written, reviews } = await checkWritten(plan.settings, batch, items, drafts);
+      const n = await saveWritten(sb, plan.settings, batch, written, reviews);
       if (!n) throw new Error('Модель не вернула ни одной карусели — нажми «Продолжить».');
       for (const it of batch) if (written.some((w) => w.key === it.id && w.questions.length)) it.slides = ['written'];
     }
@@ -436,13 +476,15 @@ export async function regenerateItem(sb: SupabaseClient, itemId: string): Promis
       .eq('id', plan.id);
     if (!ok || it.source_shortcode === before) throw new Error('Не нашлось другой залетевшей карусели — добавь досье.');
   } else {
-    const written = await writeItems(
+    const drafts = await writeItems(
       plan.settings,
       [slotOf(plan.settings, it)],
       usedList(items, it.id),
       Math.floor(Math.random() * 50)
     );
-    if (!(await saveWritten(sb, plan.settings, [it], written))) throw new Error('Модель не вернула карусель, попробуй ещё раз.');
+    const { written, reviews } = await checkWritten(plan.settings, [it], items, drafts);
+    if (!(await saveWritten(sb, plan.settings, [it], written, reviews)))
+      throw new Error('Модель не вернула карусель, попробуй ещё раз.');
   }
   await sb.from('content_plan_items').update({ status: 'draft' }).eq('id', it.id);
   const { data: fresh } = await sb.from('content_plan_items').select(ITEM_COLS).eq('id', it.id).single<PlanItem>();
