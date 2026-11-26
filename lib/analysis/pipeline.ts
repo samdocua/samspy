@@ -65,6 +65,8 @@
 //                         too long, the loop never ended and loaded the database); tagging splits a
 //                         failed batch down to single posts, a single post the fast model refuses
 //                         goes to the main model; one short line about skipped posts in ai_error.
+//   v0.6.3 (2026-11-26) — posts the fast model leaves out of its answer go to the main model one by
+//                         one before they count as skipped.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -1246,7 +1248,13 @@ async function stepTag(sb: SupabaseClient, job: AnalysisJob, deadline: number): 
       const missing = batch.filter((p) => !got.has(p.shortcode));
       await save(batch.filter((p) => got.has(p.shortcode)), tags);
       if (!missing.length) return;
-      if (retries < 2) return run(missing, retries + 1);
+      // posts the fast model left out of its answer: once more together, then each on its own
+      // (a single post goes to the main model), only then skipped
+      if (retries === 0) return run(missing, 1);
+      if (batch.length > 1) {
+        for (const p of missing) await run([p], 1);
+        return;
+      }
       await save(missing, []);
       await skipped(missing.length, 'модель их пропустила');
     } catch (e) {
