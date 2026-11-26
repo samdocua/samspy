@@ -1235,7 +1235,13 @@ async function stepTag(sb: SupabaseClient, job: AnalysisJob, deadline: number): 
   const run = async (batch: typeof untagged, retries = 0): Promise<void> => {
     try {
       const single = batch.length === 1 && retries > 0;
+      const f = job.scrape;
+      if (single && f) f.tag_main = (f.tag_main ?? 0) + 1;
       const tags = await tagPosts(batch.map(forAI), job.ai_meta!, single ? MAIN_MODEL : TAG_MODEL);
+      if (single && f && tags.length) {
+        f.tag_main_ok = (f.tag_main_ok ?? 0) + 1;
+        await setJob(sb, job.id, { scrape: f });
+      }
       const got = new Set(tags.map((t) => t.sc));
       const missing = batch.filter((p) => !got.has(p.shortcode));
       await save(batch.filter((p) => got.has(p.shortcode)), tags);

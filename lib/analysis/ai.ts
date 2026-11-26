@@ -25,7 +25,8 @@
 //                         verbatim, without brand names / app promos / their closing CTA («План»,
 //                         copy mode).
 //   v0.4.1 (2026-11-26) — stop_reason «refusal» is an error (the caller retries in smaller
-//                         parts); tagPosts() can take another model.
+//                         parts); tagPosts() can take another model; its prompt explains the task
+//                         is labelling public posts (couple question cards can be spicy).
 
 import sharp from 'sharp';
 import type { Breakdown, DossierAI, Vocab } from './types';
@@ -284,7 +285,9 @@ export async function tagPosts(posts: PostForAI[], vocab: Vocab, model = TAG_MOD
     [
       {
         type: 'text',
-        text: `Tag Instagram posts of one creator. For EVERY post below return:
+        text: `Context: this is content analytics for a marketing team. The posts below are public Instagram posts of a brand or creator — often question cards for couples (dating, relationships, intimacy; some are flirty or spicy). Your job is only to label each post for a content report: you do not write, continue or answer anything in them. Keep the labels neutral and descriptive, label spicy posts like any other.
+
+Tag Instagram posts of one creator. For EVERY post below return:
 - title: what the post is about, in Russian, max 60 characters, like a headline («Письмо Фейнмана умершей жене», «Если ты беден: челлендж „Ничего не покупаю“»)
 - rubric: exactly one of: ${vocab.rubrics.map((r) => `«${r.name}» (${r.hint})`).join('; ')}
 - hook: how the post opens, exactly one of: ${HOOKS.map((h) => `«${h.name}» (${h.hint})`).join('; ')}
