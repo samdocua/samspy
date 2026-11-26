@@ -28,6 +28,8 @@
 //   v0.4.2 (2026-11-19) — JFIF (APP0) removed too: the file has no metadata at all.
 //   v0.5.0 (2026-11-19) — layoutText() split out of drawText (used by slide checks).
 //   v0.5.1 (2026-11-19) — ensureFonts() exported (checks must measure with real fonts).
+//   v0.5.2 (2026-11-26) — the text block never leaves the frame: kept ≥ 3 % from the top and
+//                         bottom (centre / bottom + a big upward offset pushed long texts out).
 
 import type { TextPosition, TextStyleId } from './config';
 
@@ -145,6 +147,8 @@ export function drawCover(ctx: CanvasRenderingContext2D, img: HTMLImageElement, 
   ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
 }
 
+const EDGE_MARGIN = 0.03; // the text block keeps this share of the height from the top / bottom
+
 /** Split on Enter, then greedy word-wrap each line to maxWidth. */
 export function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
   const out: string[] = [];
@@ -248,6 +252,10 @@ export function layoutText(
   let top =
     o.position === 'top' ? h * 0.1 : o.position === 'bottom' ? h * 0.9 - blockH : (h - blockH) / 2;
   top += (h * o.offsetPct) / 100;
+  // never past the frame: long texts stop at the edge margin instead of being cut
+  const edge = h * EDGE_MARGIN;
+  top = Math.max(edge, Math.min(top, h - edge - blockH));
+  if (blockH > h - 2 * edge) top = (h - blockH) / 2; // taller than the frame: centred
   return { lines, top, blockH, cx: w / 2, effect: spec.effect, setFont };
 }
 

@@ -14,9 +14,12 @@
 //   v0.1.0 (2026-11-26) — initial.
 //   v0.1.1 (2026-11-26) — a dossier OCR of the cover only (older fallback) is redone from all
 //                         slides; before, such carousels were skipped (a whole source dropped out).
+//   v0.1.2 (2026-11-26) — line wraps of the original layout glued (joinSoftBreaks): they made
+//                         one-word lines on my slides.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { cleanCarouselSlides, ocrCarousel } from '@/lib/analysis/ai';
+import { joinSoftBreaks } from '@/lib/carousels/postprocess';
 import { ratioOf } from '@/lib/analysis/stats';
 import type { AnalysisAccount, AnalysisJob, AnalysisPost } from '@/lib/analysis/types';
 import { scEnabled, scPost } from '@/lib/scrape/sc';
@@ -147,7 +150,8 @@ export async function textsOf(sb: SupabaseClient, src: CopySource): Promise<{ sl
   }
   if (!ocr) return null;
   const clean = await cleanCarouselSlides(ocr, src.username).catch(() => null);
-  return { slides: clean ?? slidesFromOcr(ocr), title: post.title_ru };
+  const slides = (clean ?? slidesFromOcr(ocr)).map(joinSoftBreaks).filter(Boolean);
+  return { slides, title: post.title_ru };
 }
 
 /** Lower-case letters / digits only — to compare slide texts. */
