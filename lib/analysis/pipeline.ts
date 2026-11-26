@@ -71,6 +71,8 @@
 //                         from the post itself (1 credit), and each is read in full once per run
 //                         (slides.tried) — before, posts with only a cover link were re-read every
 //                         step forever.
+//   v0.6.5 (2026-11-26) — the dossier reads posts from the view analysis_posts_list (no transcripts,
+//                         slide texts or links: ~44 MB less on a 10k-post account), pages of 1000.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
@@ -155,6 +157,9 @@ const JOB_COLS =
   'id,username,status,mode,base_job_id,period_from,profile_run_id,profile_dataset_id,posts_run_id,posts_dataset_id,stats,error,locked_until,comments_run_id,comments_dataset_id,ai,ai_meta,ai_error,scrape,created_at,updated_at';
 const POST_COLS =
   'id,job_id,shortcode,url,kind,posted_at,caption,likes,comments,views,duration,slides,is_pinned,coauthors,owner,has_cta,display_url,video_url,thumb_path,thumb_done,slide_urls,title_ru,rubric,hook,format,breadth,first_line,tagged,transcript,ocr_text,text_done,breakdown';
+// the dossier page (view analysis_posts_list): no texts / links, has_text computed in the database
+const DOSSIER_COLS =
+  'id,job_id,shortcode,url,kind,posted_at,caption,likes,comments,views,duration,slides,is_pinned,coauthors,owner,has_cta,thumb_path,title_ru,rubric,hook,format,breadth,first_line,tagged,breakdown,has_text';
 // the same without the heavy links — enough for stats, ranking and AI steps
 const LITE_COLS =
   'id,job_id,shortcode,url,kind,posted_at,caption,likes,comments,views,duration,slides,is_pinned,coauthors,has_cta,thumb_done,title_ru,rubric,hook,format,breadth,first_line,tagged,transcript,ocr_text,text_done,breakdown';
@@ -926,16 +931,22 @@ const LOAD_PAGE = 400;
  * instead of offsets: on 10 000-post jobs offset pages of 1000 wide rows hit the 8 s statement
  * timeout. A page that still times out is retried twice.
  */
-async function loadPosts(sb: SupabaseClient, jobId: string, cols: string = LITE_COLS): Promise<AnalysisPost[]> {
+async function loadPosts(
+  sb: SupabaseClient,
+  jobId: string,
+  cols: string = LITE_COLS,
+  table = 'analysis_posts',
+  pageSize = LOAD_PAGE
+): Promise<AnalysisPost[]> {
   const out: AnalysisPost[] = [];
   const page = async (after: AnalysisPost | null) => {
     for (let attempt = 0; ; attempt++) {
-      let q = sb.from('analysis_posts').select(cols).eq('job_id', jobId).not('posted_at', 'is', null);
+      let q = sb.from(table).select(cols).eq('job_id', jobId).not('posted_at', 'is', null);
       if (after) q = q.or(`posted_at.lt.${after.posted_at},and(posted_at.eq.${after.posted_at},id.lt.${after.id})`);
       const { data, error } = await q
         .order('posted_at', { ascending: false })
         .order('id', { ascending: false })
-        .limit(LOAD_PAGE)
+        .limit(pageSize)
         .returns<AnalysisPost[]>();
       if (!error) return data ?? [];
       if (attempt >= 2) throw new Error(error.message);
@@ -946,12 +957,12 @@ async function loadPosts(sb: SupabaseClient, jobId: string, cols: string = LITE_
   for (;;) {
     const rows = await page(after);
     out.push(...rows);
-    if (rows.length < LOAD_PAGE) break;
+    if (rows.length < pageSize) break;
     after = rows[rows.length - 1];
   }
   // posts without a date (rare) go last
   const { data: undated } = await sb
-    .from('analysis_posts')
+    .from(table)
     .select(cols)
     .eq('job_id', jobId)
     .is('posted_at', null)
@@ -1525,7 +1536,9 @@ export async function getDossier(sb: SupabaseClient, username: string): Promise<
     .maybeSingle<AnalysisJob>();
   if (!job?.stats) return null;
   const stats = job.stats;
-  const posts = await loadPosts(sb, job.id, POST_COLS);
+  const posts = (await loadPosts(sb, job.id, DOSSIER_COLS, 'analysis_posts_list', 1000)) as (AnalysisPost & {
+    has_text: boolean;
+  })[];
   const fromMs = new Date(stats.period.from).getTime();
   const inPeriod = posts.filter((p) => !p.posted_at || new Date(p.posted_at).getTime() >= fromMs);
 
@@ -1559,7 +1572,7 @@ export async function getDossier(sb: SupabaseClient, username: string): Promise<
     format: p.format,
     breadth: p.breadth,
     first_line: p.first_line,
-    has_text: !!(p.transcript || p.ocr_text),
+    has_text: p.has_text,
     breakdown: p.breakdown && (p.breakdown.structure || p.breakdown.text_ru) ? p.breakdown : null,
   }));
 
