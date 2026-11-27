@@ -10,6 +10,7 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-26) — initial.
+//   v0.2.0 (2026-11-27) — caption of the post (copied on the phone page).
 
 import { randomBytes } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -22,6 +23,7 @@ export interface ShareRow {
   id: string;
   token: string;
   title: string | null;
+  caption: string | null;
   files: string[];
   created_at: string;
   expires_at: string;
@@ -30,6 +32,7 @@ export interface ShareRow {
 export interface SharePublic {
   token: string;
   title: string | null;
+  caption: string | null;
   images: { name: string; url: string }[];
   expires_at: string;
 }
@@ -57,7 +60,8 @@ export async function cleanupShares(sb: SupabaseClient) {
 export async function createShare(
   sb: SupabaseClient,
   title: string | null,
-  count: number
+  count: number,
+  caption: string | null = null
 ): Promise<{ token: string; uploads: { path: string; url: string }[]; expires_at: string }> {
   const n = Math.max(1, Math.min(MAX_FILES, Math.round(count)));
   await cleanupShares(sb).catch(() => {});
@@ -70,7 +74,13 @@ export async function createShare(
     uploads.push({ path, url: data.signedUrl });
   }
   const expires_at = new Date(Date.now() + SHARE_DAYS * 86_400_000).toISOString();
-  const { error } = await sb.from('slide_shares').insert({ token, title: title?.slice(0, 120) || null, files, expires_at });
+  const { error } = await sb.from('slide_shares').insert({
+    token,
+    title: title?.slice(0, 120) || null,
+    caption: caption?.trim().slice(0, 2200) || null, // Instagram's caption limit
+    files,
+    expires_at,
+  });
   if (error) throw new Error(error.message);
   return { token, uploads, expires_at };
 }
@@ -87,6 +97,7 @@ export async function getShare(sb: SupabaseClient, token: string): Promise<Share
   return {
     token: data.token,
     title: data.title,
+    caption: data.caption ?? null,
     expires_at: data.expires_at,
     images: data.files.map((path) => ({
       name: path.split('/').pop() ?? path,

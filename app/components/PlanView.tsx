@@ -24,6 +24,7 @@
 //   v0.7.0 (2026-11-26) — new posts show the check: «✓ проверено GPT» / «✎ исправлено GPT» + note,
 //                         and what the script still finds.
 //   v0.7.1 (2026-11-26) — copies show their proofreading: «✓ / ✎ корректура GPT» + what was fixed.
+//   v0.7.2 (2026-11-27) — «В слайды» sends the caption too (it goes to the phone page).
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -682,6 +683,7 @@ function ItemCard({
       title: `${it.account} · день ${it.day} · пост ${it.slot}`,
       texts: it.slides,
       planItemId: it.id,
+      caption: it.caption ?? '',
     });
     if (it.status === 'draft') void patch({ status: 'in_slides' });
   }
