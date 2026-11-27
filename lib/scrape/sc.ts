@@ -15,6 +15,9 @@
 //   v0.1.0 (2026-11-23) — initial: profile, user posts (paged), single post, comments (paged).
 //   v0.1.1 (2026-11-23) — pinned posts: the feed does not always flag them, so on the first page
 //                         a post among the first 3 that is older than a post below it is pinned.
+//   v0.1.2 (2026-11-27) — every answered call counts 1 credit in ai_usage (lib/usage.ts).
+
+import { addUsage } from '@/lib/usage';
 
 const API = 'https://api.scrapecreators.com';
 const TRY_DELAYS = [0, 1500, 4000];
@@ -67,6 +70,7 @@ async function scGet<T>(path: string, params: Record<string, string>, opts: Call
           `ScrapeCreators HTTP ${res.status}: ${body?.message || body?.error || text.slice(0, 200)} (ключ или кредиты)`
         );
       }
+      if (res.ok) addUsage('scrapecreators', 'scrapecreators', { credits: 1 });
       if (res.ok && body && body.success !== false) return body;
       notFound = res.status === 404;
       lastErr = `HTTP ${res.status}: ${body?.message || body?.error || text.slice(0, 200)}`;

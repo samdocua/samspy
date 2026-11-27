@@ -35,8 +35,10 @@
 //                         of the rest, then rubrics and the dossier are redone from the slide texts).
 //   v0.5.1 (2026-11-26) — the tab no longer steps jobs (the worker does): it only refreshes the
 //                         cards every 6 s while something runs.
+//   v0.5.2 (2026-11-27) — dossier: «Потрачено ≈ $…» (API calls of this job, UsageLine).
 'use client';
 
+import UsageLine from './UsageLine';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AccountCard,
@@ -616,6 +618,7 @@ function DossierView({
       </div>
 
       {error && <p className="text-sm text-red-600">{error}</p>}
+      {dossier?.job?.id && <UsageLine refId={dossier.job.id} refreshKey={card?.job?.status} />}
       {!dossier && !error && <p className="text-sm text-muted">Загрузка…</p>}
       {dossier && <DossierBody d={dossier} />}
     </div>

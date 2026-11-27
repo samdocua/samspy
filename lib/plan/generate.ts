@@ -34,8 +34,10 @@
 //                         Shorter slides: cover 5–8 words (≤ 10; a «send this to…» task hook ≤ 12),
 //                         a question ≤ 16 words (answer options on their own lines).
 //   v0.5.3 (2026-11-26) — the winning task hook keeps its key words verbatim; only the ending varies.
+//   v0.5.4 (2026-11-27) — tokens of every call go to ai_usage (lib/usage.ts).
 
 import { thinkingOff } from '@/lib/anthropic';
+import { addAnthropicUsage } from '@/lib/usage';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AnalysisAccount, AnalysisJob, AnalysisPost } from '@/lib/analysis/types';
 import { rankCarousels, topWinners } from '@/lib/analysis/winners';
@@ -195,7 +197,12 @@ async function claude(
     return claude(content, maxTokens, think, attempt + 1);
   }
   if (!res.ok) throw new Error(`Claude HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const data = (await res.json()) as { content?: { type: string; text?: string }[]; stop_reason?: string };
+  const data = (await res.json()) as {
+    content?: { type: string; text?: string }[];
+    stop_reason?: string;
+    usage?: Parameters<typeof addAnthropicUsage>[1];
+  };
+  addAnthropicUsage(PLAN_MODEL, data.usage);
   return {
     text: (data.content ?? []).filter((c) => c.type === 'text').map((c) => c.text ?? '').join('\n'),
     stop: data.stop_reason ?? '?',

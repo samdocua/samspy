@@ -17,11 +17,17 @@
 //   v0.2.0 (2026-11-26) — proofreadCopies(); the winning task hook keeps its key words verbatim
 //                         («Send this to your boyfriend … has to answer one»), checked by the script
 //                         and by the reviewer; only the ending may vary.
+//   v0.3.0 (2026-11-27) — cheaper: the review thinks at low effort (it was the biggest cost of a
+//                         plan), the proofreading of copies runs on GPT-6.2 Sol (4× cheaper);
+//                         tokens of every call go to ai_usage (lib/usage.ts).
 
+import { addOpenAIUsage, usageStep } from '@/lib/usage';
 import { normSlide } from './copy';
 import type { PlanExample, PlanReview, PlanSettings } from './types';
 
 export const REVIEW_MODEL = process.env.PLAN_REVIEW_MODEL || 'gpt-6.2-astra';
+export const REVIEW_EFFORT = process.env.PLAN_REVIEW_EFFORT || 'low'; // reasoning effort of the review
+export const PROOF_MODEL = process.env.PLAN_PROOF_MODEL || 'gpt-6.2-sol'; // copies: proofreading only
 
 export const COVER_MAX = 10;
 export const COVER_TASK_MAX = 12;
@@ -165,20 +171,14 @@ Answer with ONLY this JSON (one entry per key). For «ok» give only key and ver
 {"items":[{"key":"...","verdict":"ok"},{"key":"...","verdict":"fixed","note":"...","cover":"...","questions":["..."],"caption":"..."}]}`;
 
   try {
-    let res: Response | null = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: REVIEW_MODEL, messages: [{ role: 'user', content: prompt }] }),
-        cache: 'no-store',
-      });
-      if (res.status !== 429 && res.status < 500) break;
-      await new Promise((r) => setTimeout(r, 2000 * attempt));
+    usageStep('review');
+    let text = '';
+    try {
+      text = await openai(prompt, REVIEW_MODEL, REVIEW_EFFORT);
+    } catch (e) {
+      return skip(`не проверено: ${e instanceof Error ? e.message : String(e)}`.slice(0, 160));
     }
-    if (!res?.ok) return skip(`не проверено: OpenAI HTTP ${res?.status}: ${(await res?.text())?.slice(0, 120)}`);
-    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    const answers = new Map(parseReview(data.choices?.[0]?.message?.content ?? '').map((a) => [a.key, a]));
+    const answers = new Map(parseReview(text).map((a) => [a.key, a]));
     const out: Draft[] = drafts.map((d) => {
       const a = answers.get(d.key);
       if (!a) {
@@ -224,22 +224,39 @@ function sameText(before: string, after: string): boolean {
   return kept / a.size >= 0.6 && b.size <= a.size + 6;
 }
 
-async function openai(prompt: string): Promise<string> {
+/** One OpenAI chat call (retries 429 / 5xx); `effort` = reasoning effort, dropped if the model rejects it. */
+async function openai(prompt: string, model: string, effort?: string): Promise<string> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error('нет OPENAI_API_KEY');
+  let useEffort = !!effort;
   let res: Response | null = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= 4; attempt++) {
     res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: REVIEW_MODEL, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        ...(useEffort ? { reasoning_effort: effort } : {}),
+      }),
       cache: 'no-store',
     });
+    if (res.status === 400 && useEffort) {
+      const body = await res.clone().text();
+      if (/reasoning/i.test(body)) {
+        useEffort = false; // this model takes no reasoning effort — same call without it
+        continue;
+      }
+    }
     if (res.status !== 429 && res.status < 500) break;
     await new Promise((r) => setTimeout(r, 2000 * attempt));
   }
   if (!res?.ok) throw new Error(`OpenAI HTTP ${res?.status}: ${(await res?.text())?.slice(0, 120)}`);
-  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+  const data = (await res.json()) as {
+    choices?: { message?: { content?: string } }[];
+    usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
+  };
+  addOpenAIUsage(model, data.usage);
   return data.choices?.[0]?.message?.content ?? '';
 }
 
@@ -249,7 +266,7 @@ export async function proofreadCopies(
 ): Promise<Map<string, { slides: string[]; review: PlanReview }>> {
   const out = new Map<string, { slides: string[]; review: PlanReview }>();
   const skip = (why: string) => {
-    for (const c of copies) out.set(c.key, { slides: c.slides, review: { by: REVIEW_MODEL, verdict: 'skipped', note: why, issues: [] } });
+    for (const c of copies) out.set(c.key, { slides: c.slides, review: { by: PROOF_MODEL, verdict: 'skipped', note: why, issues: [] } });
     return out;
   };
   if (!copies.length) return out;
@@ -272,8 +289,9 @@ ${c.siblings.length ? `the same hook on their other carousels: ${c.siblings.map(
 Answer with ONLY this JSON, one entry per key. «ok» = nothing to fix. For «fixed» give ALL slides (unchanged ones as they were; a line break as « / ») and a short note in Russian listing what you fixed. Inside text values never use the " character.
 {"items":[{"key":"...","verdict":"ok"},{"key":"...","verdict":"fixed","note":"...","slides":["...","..."]}]}`;
   let answer = '';
+  usageStep('proofread');
   try {
-    answer = await openai(prompt);
+    answer = await openai(prompt, PROOF_MODEL);
   } catch (e) {
     return skip(`не проверено: ${e instanceof Error ? e.message : String(e)}`.slice(0, 160));
   }
@@ -289,11 +307,11 @@ Answer with ONLY this JSON, one entry per key. «ok» = nothing to fix. For «fi
   for (const c of copies) {
     const a = byKey.get(c.key);
     if (!a) {
-      out.set(c.key, { slides: c.slides, review: { by: REVIEW_MODEL, verdict: 'skipped', note: 'не проверено: корректор не ответил', issues: [] } });
+      out.set(c.key, { slides: c.slides, review: { by: PROOF_MODEL, verdict: 'skipped', note: 'не проверено: корректор не ответил', issues: [] } });
       continue;
     }
     if (a.verdict !== 'fixed' || !Array.isArray(a.slides) || a.slides.length !== c.slides.length) {
-      out.set(c.key, { slides: c.slides, review: { by: REVIEW_MODEL, verdict: 'ok', issues: [] } });
+      out.set(c.key, { slides: c.slides, review: { by: PROOF_MODEL, verdict: 'ok', issues: [] } });
       continue;
     }
     // take a fixed slide only if it is still the same text; line breaks come back as « / »
@@ -307,8 +325,8 @@ Answer with ONLY this JSON, one entry per key. «ok» = nothing to fix. For «fi
     out.set(c.key, {
       slides,
       review: changed
-        ? { by: REVIEW_MODEL, verdict: 'fixed', note: (a.note ?? '').trim(), issues: [] }
-        : { by: REVIEW_MODEL, verdict: 'ok', issues: [] },
+        ? { by: PROOF_MODEL, verdict: 'fixed', note: (a.note ?? '').trim(), issues: [] }
+        : { by: PROOF_MODEL, verdict: 'ok', issues: [] },
     });
   }
   return out;

@@ -25,8 +25,10 @@
 //                         and what the script still finds.
 //   v0.7.1 (2026-11-26) — copies show their proofreading: «✓ / ✎ корректура GPT» + what was fixed.
 //   v0.7.2 (2026-11-27) — «В слайды» sends the caption too (it goes to the phone page).
+//   v0.7.3 (2026-11-27) — plan: «Потрачено ≈ $…» (API calls of this plan, UsageLine).
 'use client';
 
+import UsageLine from './UsageLine';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SlidesImport } from '@/lib/carousels/toSlides';
 import {
@@ -539,6 +541,8 @@ function PlanDetail({
           </button>
         </span>
       </div>
+
+      <UsageLine refId={plan.id} refreshKey={`${card?.status}-${written}`} />
 
       {plan.settings.mode !== 'copy' && <Learned plan={plan} generating={card?.status === 'generating'} />}
 
