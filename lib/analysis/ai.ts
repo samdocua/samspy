@@ -29,8 +29,10 @@
 //                         is labelling public posts (couple question cards can be spicy).
 //   v0.4.2 (2026-11-26) — no up-front thinking for the fast-model tasks (lib/anthropic.ts): the
 //                         5.x models think by default and the thinking counted against max_tokens.
+//   v0.4.3 (2026-11-27) — tokens of every call go to ai_usage (lib/usage.ts).
 
 import { thinkingOff } from '@/lib/anthropic';
+import { addAnthropicUsage } from '@/lib/usage';
 import sharp from 'sharp';
 import type { Breakdown, DossierAI, Vocab } from './types';
 
@@ -74,7 +76,12 @@ async function claude(model: string, content: Content[], maxTokens: number, atte
     return claude(model, content, maxTokens, attempt + 1);
   }
   if (!res.ok) throw new Error(`Claude HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const data = (await res.json()) as { content?: { type: string; text?: string }[]; stop_reason?: string };
+  const data = (await res.json()) as {
+    content?: { type: string; text?: string }[];
+    stop_reason?: string;
+    usage?: Parameters<typeof addAnthropicUsage>[1];
+  };
+  addAnthropicUsage(model, data.usage);
   // the model stopped on its own safety check (spicy couple questions) — the caller retries smaller
   if (data.stop_reason === 'refusal') throw new Error('модель отказалась отвечать');
   return (data.content ?? [])

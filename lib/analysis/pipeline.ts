@@ -73,7 +73,11 @@
 //                         step forever.
 //   v0.6.5 (2026-11-26) — the dossier reads posts from the view analysis_posts_list (no transcripts,
 //                         slide texts or links: ~44 MB less on a 10k-post account), pages of 1000.
+//   v0.6.6 (2026-11-27) — what every step spends (Claude, OpenAI, ScrapeCreators) goes to ai_usage;
+//                         a passing database error (statement timeout…) in a non-AI step is retried
+//                         up to 5 times instead of failing the job.
 
+import { usageStep, withUsage } from '@/lib/usage';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import sharp from 'sharp';
 import {
@@ -297,7 +301,16 @@ export async function createAnalysis(
 // --- step -------------------------------------------------------------------------------
 
 /** Advances a job for ~40 s. Returns false if another tab holds the lock / nothing to do. */
+/** One step of a dossier job; what its API calls cost goes to ai_usage. */
 export async function stepAnalysis(sb: SupabaseClient, jobId: string): Promise<boolean> {
+  return withUsage(sb, { kind: 'analysis', refId: jobId }, () => stepAnalysisInner(sb, jobId));
+}
+
+// a passing database / network error (not a bug): retried on the next call like an AI failure
+const isTransient = (e: unknown) =>
+  /statement timeout|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up|HTTP 50[234]|upstream|temporarily/i.test(errMsg(e));
+
+async function stepAnalysisInner(sb: SupabaseClient, jobId: string): Promise<boolean> {
   const { data: cur } = await sb.from('analysis_jobs').select(JOB_COLS).eq('id', jobId).maybeSingle<AnalysisJob>();
   if (!cur || !ACTIVE.includes(cur.status)) return false;
   if (cur.locked_until && new Date(cur.locked_until).getTime() > Date.now()) return false;
@@ -317,6 +330,7 @@ export async function stepAnalysis(sb: SupabaseClient, jobId: string): Promise<b
   try {
     while (Date.now() < deadline && ACTIVE.includes(status)) {
       let next: AnalysisStatus = status;
+      usageStep(status);
       try {
         if (status === 'slides') next = await stepSlides(sb, job, deadline);
         else if (status === 'apify') next = job.scrape ? await stepFetch(sb, job, deadline) : await stepApify(sb, job);
@@ -335,7 +349,8 @@ export async function stepAnalysis(sb: SupabaseClient, jobId: string): Promise<b
           await setJob(sb, jobId, { scrape: job.scrape });
         }
       } catch (e) {
-        if (!AI_STEPS.includes(status)) throw e;
+        const aiStep = AI_STEPS.includes(status);
+        if (!aiStep && !isTransient(e)) throw e;
         // AI part failed: a passing error (timeout, network) is retried on the next call, up to
         // AI_STEP_TRIES times in a row; then the error is noted and the next AI step goes on
         const fails = job.scrape ? (job.scrape.ai_fails ??= {}) : null;
@@ -345,6 +360,7 @@ export async function stepAnalysis(sb: SupabaseClient, jobId: string): Promise<b
           break; // same step, next call
         }
         if (fails) delete fails[status];
+        if (!aiStep) throw e; // the database kept failing: the job stops with the error
         const msg = `${status}: ${errMsg(e)}`;
         job.ai_error = job.ai_error ? `${job.ai_error} · ${msg}` : msg;
         await setJob(sb, jobId, { ai_error: job.ai_error, ...(job.scrape ? { scrape: job.scrape } : {}) });

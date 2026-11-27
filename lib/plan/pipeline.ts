@@ -31,6 +31,8 @@
 //                         fixes each; item.review keeps the verdict and the note.
 //   v0.6.1 (2026-11-26) — copies get a proofreading (GPT: OCR typos, cut words, missing full stops;
 //                         wording never changes) as the last phase of the plan; a replaced copy too.
+//   v0.6.2 (2026-11-27) — what every step spends goes to ai_usage (by phase: copy, playbook, write,
+//                         review, proofread, regenerate).
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { buildPool, normSlide, slidesFromOcr, textsOf } from './copy';
@@ -45,6 +47,7 @@ import {
   type WriteSlot,
   type Written,
 } from './generate';
+import { usageStep, withUsage } from '@/lib/usage';
 import { codeIssues, competitorLines, proofreadCopies, reviewItems, type CopyDraft } from './review';
 import {
   CAPTION_BAITS,
@@ -451,7 +454,12 @@ async function proofreadStep(sb: SupabaseClient, copies: PlanItem[]) {
 // --- step / edit ----------------------------------------------------------------------------------
 
 /** Fills one batch of empty slots. Returns false when another caller holds the lock / nothing to do. */
+/** One step of a plan; what its API calls cost goes to ai_usage. */
 export async function stepPlan(sb: SupabaseClient, planId: string): Promise<boolean> {
+  return withUsage(sb, { kind: 'plan', refId: planId }, () => stepPlanInner(sb, planId));
+}
+
+async function stepPlanInner(sb: SupabaseClient, planId: string): Promise<boolean> {
   const { data: cur } = await sb.from('content_plans').select(PLAN_COLS).eq('id', planId).maybeSingle<ContentPlan>();
   if (!cur || cur.status !== 'generating') return false;
   if (cur.locked_until && new Date(cur.locked_until).getTime() > Date.now()) return false;
@@ -468,6 +476,7 @@ export async function stepPlan(sb: SupabaseClient, planId: string): Promise<bool
       // last: proofreading of the copies (OCR typos, cut words) — 6 per step
       const unread = items.filter((i) => itemModeOf(plan.settings, i) === 'copy' && i.slides.length && !i.review);
       if (unread.length) {
+        usageStep('proofread');
         await proofreadStep(sb, unread.slice(0, PROOF_BATCH));
         if (unread.length > PROOF_BATCH) return true;
       }
@@ -476,9 +485,11 @@ export async function stepPlan(sb: SupabaseClient, planId: string): Promise<bool
     }
     // copies first (mix plans), then the new ones
     if (empty.some((i) => itemModeOf(plan.settings, i) === 'copy')) {
+      usageStep('copy');
       await stepCopy(sb, plan, items);
     } else if (!plan.settings.learned && !plan.settings.brief) {
       // first: learn from the sources' strongest carousels (one step, ~1–2 min)
+      usageStep('playbook');
       const { examples, perSource } = await loadExamples(sb, plan.sources);
       const settings: PlanSettings = { ...plan.settings, learned: perSource };
       if (examples.length >= MIN_EXAMPLES) {
@@ -490,6 +501,7 @@ export async function stepPlan(sb: SupabaseClient, planId: string): Promise<bool
       await sb.from('content_plans').update({ settings, updated_at: nowIso() }).eq('id', planId);
     } else {
       const batch = empty.slice(0, BATCH);
+      usageStep('write');
       const done = items.filter((i) => i.slides.length && itemModeOf(plan.settings, i) === 'write').length;
       const drafts = await writeItems(
         plan.settings,
@@ -524,6 +536,14 @@ export async function resumePlan(sb: SupabaseClient, planId: string) {
 
 /** Write mode: Claude rewrites the carousel. Copy mode: the next carousel from the pool. */
 export async function regenerateItem(sb: SupabaseClient, itemId: string): Promise<PlanItem> {
+  const { data: ref } = await sb.from('content_plan_items').select('plan_id').eq('id', itemId).maybeSingle();
+  if (!ref) throw new Error('Карусель не найдена.');
+  return withUsage(sb, { kind: 'plan', refId: ref.plan_id as string, step: 'regenerate' }, () =>
+    regenerateItemInner(sb, itemId)
+  );
+}
+
+async function regenerateItemInner(sb: SupabaseClient, itemId: string): Promise<PlanItem> {
   const { data: it } = await sb.from('content_plan_items').select(ITEM_COLS).eq('id', itemId).maybeSingle<PlanItem>();
   if (!it) throw new Error('Карусель не найдена.');
   const { data: plan } = await sb.from('content_plans').select(PLAN_COLS).eq('id', it.plan_id).maybeSingle<ContentPlan>();
