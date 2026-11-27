@@ -8,6 +8,7 @@
 // Version history:
 //   v0.1.0 (2026-11-19) — initial hand-off (no CTA).
 //   v0.2.0 (2026-11-22) — optional planItemId: a carousel from «План» (marked done after ZIP).
+//   v0.3.0 (2026-11-27) — optional caption (from «План»): goes with the slides to the phone page.
 
 import { joinSoftBreaks } from './postprocess';
 import type { CarouselPostFull } from './types';
@@ -18,6 +19,7 @@ export interface SlidesImport {
   title: string; // e.g. "@flamingoappreels"
   texts: string[]; // one entry per slide, in order
   planItemId?: string; // sent from «План»: «Скачать все» in «Слайды» marks it done
+  caption?: string; // post caption (from «План») — copied on the phone page
 }
 
 export function carouselToSlideTexts(post: CarouselPostFull): string[] {

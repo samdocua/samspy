@@ -8,6 +8,7 @@
 //
 // Version history:
 //   v0.1.0 (2026-11-26) — initial.
+//   v0.2.0 (2026-11-27) — the post caption with «Скопировать подпись».
 'use client';
 
 import { useEffect, useState } from 'react';
@@ -19,6 +20,22 @@ export default function ShareClient({ share }: { share: SharePublic }) {
   const [note, setNote] = useState<string | null>(null);
   const [deleted, setDeleted] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  async function copyCaption() {
+    const text = share.caption ?? '';
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // older iOS without clipboard API: select the text so «Копировать» is one tap away
+      const ta = document.getElementById('share-caption') as HTMLTextAreaElement | null;
+      ta?.focus();
+      ta?.select();
+      return;
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
 
   useEffect(() => {
     let off = false;
@@ -106,6 +123,27 @@ export default function ShareClient({ share }: { share: SharePublic }) {
         </button>
       </div>
       {note && <p className="mt-1 text-xs text-muted">{note}</p>}
+
+      {share.caption && (
+        <div className="mt-3 rounded-xl border border-edge bg-white p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-xs font-medium text-muted">Подпись к посту</span>
+            <button
+              onClick={() => void copyCaption()}
+              className="h-10 rounded-lg bg-gray-900 px-4 text-sm font-semibold text-white"
+            >
+              {copied ? '✓ Скопировано' : 'Скопировать подпись'}
+            </button>
+          </div>
+          <textarea
+            id="share-caption"
+            readOnly
+            value={share.caption}
+            rows={Math.min(6, share.caption.split('\n').length + 1)}
+            className="w-full resize-none bg-transparent text-[15px] leading-snug outline-none"
+          />
+        </div>
+      )}
 
       <div className="mt-3 space-y-4">
         {share.images.map((im, i) => (

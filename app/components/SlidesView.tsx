@@ -61,6 +61,8 @@
 //   v1.1.1 (2026-11-26) — imported texts: line wraps of the original layout glued (joinSoftBreaks).
 //   v1.2.0 (2026-11-26) — «📱 На телефон»: slides uploaded to a link (7 days) with a QR code; the
 //                         phone page saves them to Photos (long press or «Сохранить все»).
+//   v1.3.0 (2026-11-27) — «Подпись к посту» under the buttons (filled from «План», editable): goes to
+//                         the phone page with a «Скопировать подпись» button.
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -217,6 +219,7 @@ export default function SlidesView({
   const [stripDrag, setStripDrag] = useState(false);
   const [pendingImport, setPendingImport] = useState<SlidesImport | null>(null);
   const [importTitle, setImportTitle] = useState<string | null>(null); // for the phone link page
+  const [caption, setCaption] = useState(''); // post caption — copied on the phone page
   const [notice, setNotice] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [pool, setPool] = useState<Pool | null>(null);
@@ -492,6 +495,7 @@ export default function SlidesView({
       }
       replaceSlides(mode === 'replace' ? fresh : [...slidesRef.current, ...fresh]);
       setImportTitle(imp.title);
+      if (mode === 'replace') setCaption(imp.caption ?? '');
       planItemRef.current = mode === 'replace' ? imp.planItemId ?? null : null;
       setActiveId(fresh[0].id);
       setPendingImport(null);
@@ -664,7 +668,11 @@ export default function SlidesView({
       const res = await fetch('/api/shares', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: importTitle ?? `Слайды ${new Date().toLocaleDateString('ru-RU')}`, count: blobs.length }),
+        body: JSON.stringify({
+          title: importTitle ?? `Слайды ${new Date().toLocaleDateString('ru-RU')}`,
+          count: blobs.length,
+          caption,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
@@ -890,6 +898,18 @@ export default function SlidesView({
                 </button>
               )}
             </div>
+            {readyCount > 0 && (
+              <label className="mx-auto mt-4 block max-w-xl">
+                <span className="mb-1 block text-xs font-medium text-muted">Подпись к посту — будет на странице телефона с кнопкой «Скопировать»</span>
+                <textarea
+                  value={caption}
+                  onChange={(e) => setCaption(e.target.value)}
+                  rows={2}
+                  placeholder="Подпись подставится из «Плана», или впиши свою"
+                  className="w-full rounded-lg border border-edge bg-white px-3 py-2 text-sm"
+                />
+              </label>
+            )}
           </div>
 
           {/* slide strip — also a drop target for several files */}
