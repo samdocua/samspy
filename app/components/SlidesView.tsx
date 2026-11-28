@@ -63,6 +63,13 @@
 //                         phone page saves them to Photos (long press or «Сохранить все»).
 //   v1.3.0 (2026-11-27) — «Подпись к посту» under the buttons (filled from «План», editable): goes to
 //                         the phone page with a «Скопировать подпись» button.
+//   v2.0.0 (2026-11-28) — «Как ставить текст»: «Вписать в картинку» (new default) or «Поверх фото»
+//                         (the old way). Inside: every slide, the cover and the CTA too, gets a
+//                         random template photo (public/slide-templates, no repeats in a carousel,
+//                         not-yet-used first) and its text is written INTO the object on it
+//                         (lib/slides/templateRender.ts) — one font (Playfair Display), the size
+//                         fits the surface, perspective / tilt / curve of the object followed.
+//                         «Перемешать все», «Другой шаблон», «Сбросить память». Format 3:4.
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -75,6 +82,7 @@ import '@fontsource/cormorant/700.css';
 import '@fontsource/oswald/600.css';
 import '@fontsource/gabarito/600.css';
 import '@fontsource/montserrat/700.css';
+import '@fontsource/playfair-display/600.css';
 import {
   ASPECT_RATIOS,
   DEFAULT_SETTINGS,
@@ -85,6 +93,15 @@ import {
   type SlidesSettings,
 } from '@/lib/slides/config';
 import { canvasToBlob, compressImage, renderSlide, type TextOptions } from '@/lib/slides/render';
+import { renderTemplateSlide } from '@/lib/slides/templateRender';
+import {
+  TEMPLATES,
+  clearUsedTemplates,
+  markTemplatesUsed,
+  pickTemplates,
+  templateSrc,
+  usedTemplates,
+} from '@/lib/slides/templates';
 import { pickSaveTarget, stamp } from '@/lib/slides/save';
 import { zipSync } from 'fflate';
 import QRCode from 'qrcode';
@@ -127,6 +144,7 @@ interface Slide {
   id: string;
   source: string | null; // photo (downscaled JPEG data URL)
   file: { name: string; group: string } | null; // when the photo came from the folder
+  tpl: string | null; // template photo (mode «Вписать в картинку»)
   text: string;
   check: SlideCheck | null;
   checking: boolean;
@@ -139,6 +157,7 @@ function newSlide(): Slide {
     id: Math.random().toString(36).slice(2, 10),
     source: null,
     file: null,
+    tpl: null,
     text: '',
     check: null,
     checking: false,
@@ -153,6 +172,8 @@ const pad2 = (n: number) => String(n).padStart(2, '0');
 function checkSig(slide: Slide, s: SlidesSettings): string {
   const r = slide.source ?? '';
   return [
+    s.placement,
+    slide.tpl ?? '',
     r.length,
     r.slice(-48),
     slide.text,
@@ -288,7 +309,55 @@ export default function SlidesView({
 
   const activeIndex = Math.max(0, slides.findIndex((s) => s.id === activeId));
   const active = slides[activeIndex] ?? slides[0];
-  const exp = EXPORT_SIZE[settings.aspect];
+  const inside = settings.placement === 'inside';
+  const exp = EXPORT_SIZE[inside ? '3:4' : settings.aspect]; // templates are 3:4
+
+  /** What the slide shows: its template (mode «Вписать») or its photo. */
+  const imgOf = (s: Slide) => (inside ? (s.tpl ? templateSrc(s.tpl) : null) : s.source);
+
+  /** Final picture of a slide into `c` (current settings). */
+  async function renderOf(c: HTMLCanvasElement, s: Slide, w: number, h: number) {
+    const st = settingsRef.current;
+    if (st.placement === 'inside') {
+      if (!s.tpl) throw new Error('у слайда нет шаблона');
+      await renderTemplateSlide(c, s.tpl, s.text, w, h);
+    } else {
+      await renderSlide(c, s.source!, w, h, textOptions(st, s.text));
+    }
+  }
+
+  // --- templates (mode «Вписать в картинку») -----------------------------------------------
+  const [tplUsedCount, setTplUsedCount] = useState(0);
+  const refreshTplUsed = () => setTplUsedCount(usedTemplates().size);
+  useEffect(refreshTplUsed, []);
+
+  /** Gives the slides random templates: none of the other slides', not-yet-used ones first. */
+  const assignTemplates = useCallback(
+    (ids: string[]) => {
+      if (!ids.length) return;
+      const taken = new Set(
+        slidesRef.current.filter((s) => !ids.includes(s.id) && s.tpl).map((s) => s.tpl as string)
+      );
+      const picks = pickTemplates(ids.length, taken, usedTemplates());
+      ids.forEach((id, i) => patch(id, { tpl: picks[i], check: null }));
+    },
+    [patch]
+  );
+
+  // in mode «Вписать» every slide (cover and CTA too) gets a template as soon as it appears
+  useEffect(() => {
+    if (!loaded || !inside) return;
+    const missing = slides.filter((s) => !s.tpl).map((s) => s.id);
+    if (missing.length) assignTemplates(missing);
+  }, [loaded, inside, slides, assignTemplates]);
+
+  const shuffleTemplates = () => assignTemplates(slidesRef.current.map((s) => s.id));
+  const otherTemplate = (id: string) => assignTemplates([id]);
+  function resetTplUsed() {
+    clearUsedTemplates();
+    refreshTplUsed();
+    flash('Память использованных шаблонов сброшена.');
+  }
 
   const flash = useCallback((msg: string) => {
     setNotice(msg);
@@ -475,6 +544,11 @@ export default function SlidesView({
 
   /** Groups of the slides that are downloaded count as used for the next carousels. */
   function rememberUsed(list: Slide[]) {
+    if (settingsRef.current.placement === 'inside') {
+      markTemplatesUsed(list.filter((s) => s.tpl).map((s) => s.tpl as string));
+      refreshTplUsed();
+      return;
+    }
     const p = poolRef.current;
     if (!p) return;
     markUsed(
@@ -499,7 +573,9 @@ export default function SlidesView({
       planItemRef.current = mode === 'replace' ? imp.planItemId ?? null : null;
       setActiveId(fresh[0].id);
       setPendingImport(null);
-      if (poolRef.current) {
+      if (settingsRef.current.placement === 'inside') {
+        flash(`Тексты из ${imp.title}: ${fresh.length} слайдов, шаблоны подобраны.`);
+      } else if (poolRef.current) {
         void fillSlides(fresh.map((s) => s.id));
       } else {
         flash(`Тексты из ${imp.title}: ${fresh.length} слайдов. Выбери папку с фото — они подберутся сами.`);
@@ -522,9 +598,11 @@ export default function SlidesView({
   /** Local + AI check of the text overlay of one slide. Returns its status. */
   async function checkSlide(id: string): Promise<SlideCheck['status'] | null> {
     const slide = slidesRef.current.find((s) => s.id === id);
-    if (!slide?.source) return null;
     const s = settingsRef.current;
-    const size = EXPORT_SIZE[s.aspect];
+    const isInside = s.placement === 'inside';
+    if (isInside ? !slide?.tpl : !slide?.source) return null;
+    if (!slide) return null;
+    const size = EXPORT_SIZE[isInside ? '3:4' : s.aspect];
     const opts = textOptions(s, slide.text);
     const sig = checkSig(slide, s);
     patch(id, { checking: true });
@@ -532,7 +610,8 @@ export default function SlidesView({
     // 1) instant local checks
     const issues: CheckIssue[] = [...textIssues(slide.text)];
     try {
-      issues.push(...(await placementIssues(slide.source, size.w, size.h, opts)));
+      // placement checks are for the overlay; inside a template the surface defines the place
+      if (!isInside) issues.push(...(await placementIssues(slide.source!, size.w, size.h, opts)));
     } catch {
       /* ignore — AI check still runs */
     }
@@ -541,7 +620,7 @@ export default function SlidesView({
     let aiError: string | null = null;
     try {
       const full = document.createElement('canvas');
-      await renderSlide(full, slide.source, size.w, size.h, opts);
+      await renderOf(full, slide, size.w, size.h);
       const small = document.createElement('canvas');
       small.width = 768;
       small.height = Math.round((768 * size.h) / size.w);
@@ -612,16 +691,16 @@ export default function SlidesView({
   }
 
   const checkAll = () =>
-    checkMany(slidesRef.current.filter((s) => s.source && !s.checking).map((s) => s.id));
+    checkMany(slidesRef.current.filter((s) => imgOf(s) && !s.checking).map((s) => s.id));
 
   // --- live preview ---------------------------------------------------------------
-  const previewSrc = active?.source ?? null;
+  const previewSrc = active ? imgOf(active) : null;
   useEffect(() => {
     const canvas = previewRef.current;
-    if (!canvas || !previewSrc) return;
+    if (!canvas || !previewSrc || !active) return;
     let cancelled = false;
     const off = document.createElement('canvas');
-    renderSlide(off, previewSrc, exp.w, exp.h, textOptions(settings, active?.text ?? ''))
+    renderOf(off, active, exp.w, exp.h)
       .then(() => {
         if (cancelled) return;
         canvas.width = off.width;
@@ -634,7 +713,8 @@ export default function SlidesView({
     return () => {
       cancelled = true;
     };
-  }, [previewSrc, active?.text, settings, exp.w, exp.h]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewSrc, active?.text, active?.tpl, settings, exp.w, exp.h]);
 
   // --- download ------------------------------------------------------------------
   const [zipping, setZipping] = useState(false);
@@ -642,12 +722,12 @@ export default function SlidesView({
   /** Final JPEG of a slide (text drawn, metadata stripped). */
   async function slideBlob(slide: Slide): Promise<Blob> {
     const c = document.createElement('canvas');
-    await renderSlide(c, slide.source!, exp.w, exp.h, textOptions(settings, slide.text));
+    await renderOf(c, slide, exp.w, exp.h);
     return canvasToBlob(c);
   }
 
   async function downloadSlide(slide: Slide, index: number) {
-    if (!slide.source) return;
+    if (!imgOf(slide)) return;
     const target = await pickSaveTarget(`slide-${pad2(index + 1)}.jpg`, 'image/jpeg', 'jpg');
     if (!target) return;
     await target.write(await slideBlob(slide));
@@ -659,7 +739,7 @@ export default function SlidesView({
   const [phone, setPhone] = useState<{ url: string; qr: string } | null>(null);
 
   async function sendToPhone() {
-    const ready = slides.filter((s) => s.source);
+    const ready = slides.filter((s) => imgOf(s));
     if (!ready.length) return;
     setSending(true);
     try {
@@ -702,7 +782,7 @@ export default function SlidesView({
 
   /** All slides with a photo in one ZIP: slide-01.jpg, slide-02.jpg … (strip order). */
   async function downloadAll() {
-    const ready = slides.map((s, i) => ({ s, i })).filter(({ s }) => s.source);
+    const ready = slides.map((s, i) => ({ s, i })).filter(({ s }) => imgOf(s));
     if (!ready.length) return;
     const target = await pickSaveTarget(`slides_${stamp()}.zip`, 'application/zip', 'zip');
     if (!target) return;
@@ -759,14 +839,15 @@ export default function SlidesView({
     flash('Настройки текста сброшены.');
   }
 
-  const readyCount = slides.filter((s) => s.source).length;
+  const readyCount = slides.filter((s) => imgOf(s)).length;
+  const tplOnSlides = new Set(slides.filter((s) => s.tpl).map((s) => s.tpl));
   const checkRows = slides.map((s, i) => ({
     s,
     i,
     valid: !!s.check && s.check.sig === checkSig(s, settings),
   }));
   const checkedValid = checkRows.filter((r) => r.valid);
-  const staleChecks = checkRows.filter((r) => r.s.check && !r.valid && r.s.source).length;
+  const staleChecks = checkRows.filter((r) => r.s.check && !r.valid && imgOf(r.s)).length;
   const errorSlides = slides.map((s, i) => ({ s, i })).filter(({ s }) => s.error);
   const groupsOnSlides = new Set(slides.filter((s) => s.file).map((s) => s.file!.group));
 
@@ -835,7 +916,8 @@ export default function SlidesView({
           <div className="mb-3 flex items-baseline justify-between gap-4">
             <h2 className="text-base font-semibold">Слайд {pad2(activeIndex + 1)}</h2>
             <span className="truncate text-xs text-muted">
-              {exp.w}×{exp.h} · JPEG{active?.file ? ` · ${active.file.name}` : ''}
+              {exp.w}×{exp.h} · JPEG
+              {inside ? (active?.tpl ? ` · шаблон ${active.tpl}` : '') : active?.file ? ` · ${active.file.name}` : ''}
             </span>
           </div>
 
@@ -850,7 +932,9 @@ export default function SlidesView({
                 <div className="px-8 text-center">
                   <p className="font-medium">Здесь появится слайд.</p>
                   <p className="mt-1 text-sm text-muted">
-                    Выбери папку с фото справа — они подберутся сами, или перетащи фото.
+                    {inside
+                      ? 'Шаблон подберётся сам — впиши текст справа.'
+                      : 'Выбери папку с фото справа — они подберутся сами, или перетащи фото.'}
                   </p>
                 </div>
               )}
@@ -864,7 +948,7 @@ export default function SlidesView({
             <div className="mt-4 flex flex-wrap justify-center gap-2">
               <button
                 onClick={() => active && void downloadSlide(active, activeIndex)}
-                disabled={!active?.source}
+                disabled={!active || !imgOf(active)}
                 className="rounded-lg bg-accent px-5 py-2 text-sm font-medium text-white disabled:opacity-40"
               >
                 Скачать JPEG
@@ -888,7 +972,15 @@ export default function SlidesView({
                   {sending ? 'Загружаю…' : '📱 На телефон'}
                 </button>
               )}
-              {pool && active && (
+              {inside && active && (
+                <button
+                  onClick={() => otherTemplate(active.id)}
+                  className="rounded-lg border border-edge bg-white px-5 py-2 text-sm font-medium"
+                >
+                  ↻ Другой шаблон
+                </button>
+              )}
+              {!inside && pool && active && (
                 <button
                   onClick={() => void otherPhoto(active.id)}
                   disabled={picking}
@@ -933,14 +1025,14 @@ export default function SlidesView({
                   <div key={s.id} className="group relative">
                     <button
                       onClick={() => setActiveId(s.id)}
-                      title={s.file?.name}
+                      title={inside ? (s.tpl ? `шаблон ${s.tpl}` : undefined) : s.file?.name}
                       className={`relative block h-24 w-[72px] overflow-hidden rounded-lg border-2 bg-white ${
                         isActive ? 'border-accent' : 'border-edge'
                       }`}
                     >
-                      {s.source && (
+                      {imgOf(s) && (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={s.source} alt="" className="h-full w-full object-cover" />
+                        <img src={imgOf(s)!} alt="" className="h-full w-full object-cover" />
                       )}
                       <span className="absolute left-1 top-1 rounded bg-gray-900/80 px-1 text-[10px] font-semibold text-white">
                         {pad2(i + 1)}
@@ -970,11 +1062,11 @@ export default function SlidesView({
                     >
                       ×
                     </button>
-                    {pool && (
+                    {(inside || pool) && (
                       <button
-                        onClick={() => void otherPhoto(s.id)}
-                        disabled={picking}
-                        title="Другое фото"
+                        onClick={() => (inside ? otherTemplate(s.id) : void otherPhoto(s.id))}
+                        disabled={!inside && picking}
+                        title={inside ? 'Другой шаблон' : 'Другое фото'}
                         className="absolute -bottom-2 -right-2 hidden h-5 w-5 items-center justify-center rounded-full border border-edge bg-white text-[11px] text-muted hover:text-gray-900 group-hover:flex"
                       >
                         ↻
@@ -1000,7 +1092,58 @@ export default function SlidesView({
 
         {/* ---------------- right: settings ---------------- */}
         <aside className="space-y-5 rounded-xl border border-edge bg-white p-5">
+          {/* how the text goes on: written into a template photo, or over a photo */}
+          <div>
+            <span className={labelCls}>Как ставить текст</span>
+            <div className="grid grid-cols-2 gap-1 rounded-lg bg-gray-100 p-1 text-sm">
+              {(
+                [
+                  ['inside', 'Вписать в картинку'],
+                  ['overlay', 'Поверх фото'],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  onClick={() => set('placement', id)}
+                  className={`rounded-md py-1.5 font-medium ${
+                    settings.placement === id ? 'bg-white shadow-sm' : 'text-muted hover:text-gray-900'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {inside && (
+            <div className="rounded-lg border border-edge p-3 text-xs">
+              <p className="text-sm font-medium">🖼 Шаблоны: {TEMPLATES.length}</p>
+              <p className="mt-0.5 text-muted">
+                на слайдах {tplOnSlides.size} · уже использовано {tplUsedCount}
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button onClick={shuffleTemplates} className={btnCls}>
+                  ↻ Перемешать все
+                </button>
+                <button
+                  onClick={resetTplUsed}
+                  disabled={tplUsedCount === 0}
+                  title="Забыть, какие шаблоны уже были в скачанных каруселях"
+                  className={`${btnCls} text-muted`}
+                >
+                  Сбросить память ({tplUsedCount})
+                </button>
+              </div>
+              <p className="mt-2 text-muted">
+                Каждый слайд — и обложка, и призыв в конце — получает случайный шаблон, без повторов в
+                карусели; сначала те, что ещё не попадали в скачанные карусели. Текст вписывается в
+                предмет на фото: один шрифт, размер подбирается сам.
+              </p>
+            </div>
+          )}
+
           {/* photos from a folder */}
+          {!inside && (
           <div>
             <span className={labelCls}>Фото из папки (копии из «Размножения»)</span>
             {pool ? (
@@ -1076,8 +1219,10 @@ export default function SlidesView({
               }}
             />
           </div>
+          )}
 
           {/* manual photo for the current slide */}
+          {!inside && (
           <div>
             <span className={labelCls}>Своё фото на слайд {pad2(activeIndex + 1)}</span>
             <div
@@ -1119,9 +1264,12 @@ export default function SlidesView({
               }}
             />
           </div>
+          )}
 
           {/* text overlay settings */}
           <div className="space-y-3 border-t border-edge pt-5">
+            {!inside && (
+            <>
             <div className="grid grid-cols-3 gap-2">
               <Field label="Формат">
                 <select
@@ -1221,6 +1369,8 @@ export default function SlidesView({
                 />
               </Field>
             </div>
+            </>
+            )}
 
             <div>
               <span className={labelCls}>
@@ -1239,9 +1389,9 @@ export default function SlidesView({
                           isActive ? 'border-accent' : 'border-edge'
                         }`}
                       >
-                        {s.source && (
+                        {imgOf(s) && (
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img src={s.source} alt="" className="h-full w-full object-cover" />
+                          <img src={imgOf(s)!} alt="" className="h-full w-full object-cover" />
                         )}
                         <span className="absolute left-0.5 top-0.5 rounded bg-gray-900/80 px-0.5 text-[9px] font-semibold text-white">
                           {pad2(i + 1)}
