@@ -23,6 +23,8 @@
 //   v0.7.0 (2026-11-19) — autoFix: check every generated slide and auto-fix photo artifacts.
 //   v0.7.1 (2026-11-19) — default text position «Верх» with offset −6 (multi-line text grows
 //                         downward instead of creeping to the top edge); altModelFor().
+//   v0.8.0 (2026-11-28) — placement: 'inside' (text written into a template photo, default) or
+//                         'overlay' (the old way: text over a photo).
 
 export type Provider = 'gemini' | 'fal';
 
@@ -150,7 +152,10 @@ export const TEXT_STYLES: { id: TextStyleId; label: string }[] = [
 ];
 
 // --- settings ----------------------------------------------------------------
+export type Placement = 'inside' | 'overlay';
+
 export interface SlidesSettings {
+  placement: Placement; // 'inside' = text written into a template photo; 'overlay' = over a photo
   prompt: string;
   modelId: string;
   aspect: AspectRatio;
@@ -176,6 +181,7 @@ export const DEFAULT_PROMPT =
   'redraw architecture. Photorealistic, shot on a phone, no watermark.';
 
 export const DEFAULT_SETTINGS: SlidesSettings = {
+  placement: 'inside',
   prompt: DEFAULT_PROMPT,
   modelId: 'openai/gpt-image-2.6/flare/edit',
   aspect: '3:4',
@@ -205,6 +211,7 @@ export function sanitizeSettings(raw: unknown): SlidesSettings {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   const d = DEFAULT_SETTINGS;
   return {
+    placement: r.placement === 'overlay' ? 'overlay' : 'inside',
     prompt: typeof r.prompt === 'string' && r.prompt.trim() ? r.prompt : d.prompt,
     modelId: pick(r.modelId, IMAGE_MODELS.map((m) => m.id), d.modelId),
     aspect: pick(r.aspect, ASPECT_RATIOS, d.aspect),
